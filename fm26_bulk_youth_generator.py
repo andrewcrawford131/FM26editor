@@ -1,974 +1,632 @@
 #!/usr/bin/env python3
-"""FM26 Bulk Youth Generator (DB Changes XML)
-
-Generates Football Manager 26 Editor "db changes" XML with randomly generated youth players.
-
-Key feature: deterministic, collision-safe ID generation using SHA-256 as specified:
-  digest = SHA256(f"{seed}|{i}|{label}")
-  n = int.from_bytes(digest, "big")
-  int32  = 1 + (n % 2147483646)
-  int64  = 1 + (n % 9223372036854775806)
-
-If collisions happen in one file, we re-hash with label+"|1", "|2", ...
-
-Usage:
-  python fm26_bulk_youth_generator.py --clubs_cities clubs_cities.csv --count 10 --output fm26_youth.xml \
-      --age_min 14 --age_max 16 --ca_min 20 --ca_max 160 --pa_min 80 --pa_max 200 --seed 123
-
-Inputs:
-  - clubs_cities.csv (from fm_dbchanges_extract_fixed_v4.py)
-  - scottish_male_first_names_2500.csv (header: name)
-  - scottish_surnames_2500.csv (header: name)
-
-Notes:
-  - CSV rows may have blanks (clubs have no city fields and vice versa). We skip blanks safely.
-  - Nationality is always included (Scotland constants from your sample XML).
-"""
-
 from __future__ import annotations
+"""
+FM26 Players Generator (db changes XML) - stable SHA256 IDs.
 
-import argparse
-import csv
-import hashlib
-import re
-import os
-import random
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+Batch:
+  python fm26_bulk_youth_generator.py --master_library master_library.csv --count 10000 --output fm26_players.xml --seed 123
 
-# DO NOT CHANGE (per user requirement)
+Single:
+  python fm26_bulk_youth_generator.py --master_library master_library.csv --count 1 --output fm26_players.xml --append \
+    --dob 2012-12-31 --height 180 --club_dbid 1570 --club_large 6648609375756 --city_dbid 102580 --city_large 440573450358963 \
+    --nation_dbid 793 --nation_large 3405909066521 --positions DL,DC --ca_min 120 --ca_max 120 --pa_min 180 --pa_max 180 --seed 123
+"""
+import argparse, csv, datetime as dt, hashlib, os, random, re, sys
+from xml.sax.saxutils import escape as xesc
+from typing import Dict, List, Optional, Sequence, Tuple
+
+# ---- FM property numbers (keep stable) ----
 CITY_PROPERTY = 1348690537
 CLUB_PROPERTY = 1348695145
+NATION_PROPERTY = 1349416041
+CREATE_PROPERTY = 1094992978
 
-# From your sample XML (keep nationality included)
-SCOTLAND_DBID = 793
-SCOTLAND_NNAT = 3405909066521
-SCOTLAND_ODVL_NNAT = 3285649982205
-NATIONALITY_INFO_VALUE = 85
+# player/person table attribute records
+TBL_PLAYER = 1
+# creation record table type
+TBL_CREATE = 55
 
-# Core property IDs from your sample (used in output)
 PROP_FIRST_NAME = 1348890209
 PROP_SECOND_NAME = 1349742177
 PROP_COMMON_NAME = 1348693601
 PROP_HEIGHT = 1349018995
 PROP_DOB = 1348759394
-PROP_CITY_OF_BIRTH = CITY_PROPERTY
-PROP_NATION = 1349416041
 PROP_NATIONALITY_INFO = 1349415497
-PROP_CLUB = CLUB_PROPERTY
 PROP_WAGE = 1348695911
 PROP_DATE_MOVED_TO_NATION = 1346588266
+PROP_DATE_JOINED_CLUB = 1348692580
+PROP_DATE_LAST_SIGNED = 1348694884
 PROP_CONTRACT_EXPIRES = 1348691320
 PROP_SQUAD_STATUS = 1347253105
 PROP_CA = 1346584898
 PROP_PA = 1347436866
-PROP_REP_CURRENT = 1346589264
-PROP_REP_HOME = 1346916944
-PROP_REP_WORLD = 1347899984
+PROP_CURRENT_REP = 1346589264
+PROP_HOME_REP = 1346916944
+PROP_WORLD_REP = 1347899984
 PROP_LEFT_FOOT = 1346661478
 PROP_RIGHT_FOOT = 1346663017
-
-# Optional-but-useful contract fields from your sample
-PROP_DATE_JOINED_CLUB = 1348692580
-PROP_DATE_LAST_SIGNED = 1348694884
 PROP_TRANSFER_VALUE = 1348630085
 
-# Position properties (from your sample)
-PROP_POS_GK = 1348956001
-PROP_POS_DL = 1348758643
-PROP_POS_DC = 1348756325
-PROP_POS_DR = 1348760179
-PROP_POS_DM = 1348758883
-PROP_POS_WBL = 1350001260
-PROP_POS_WBR = 1350001266
-PROP_POS_ML = 1349348467
-PROP_POS_MC = 1349346149
-PROP_POS_MR = 1349350003
-PROP_POS_AML = 1348562284
-PROP_POS_AMC = 1348562275
-PROP_POS_AMR = 1348562290
-PROP_POS_ST = 1348559717
+POS_PROPS: Dict[str, int] = {
+    "GK": 1348956001,
+    "DL": 1348758643,
+    "DC": 1348756325,
+    "DR": 1348760179,
+    "WBL": 1350001260,
+    "WBR": 1350001266,
+    "DM": 1348758883,
+    "ML": 1349348467,
+    "MC": 1349346149,
+    "MR": 1349350003,
+    "AML": 1348562284,
+    "AMC": 1348562275,
+    "AMR": 1348562290,
+    "ST": 1348559717,
+}
+ALL_POS = list(POS_PROPS.keys())
 
-ALL_POS_PROPS = [
-    PROP_POS_GK,
-    PROP_POS_DL, PROP_POS_DC, PROP_POS_DR,
-    PROP_POS_DM,
-    PROP_POS_WBL, PROP_POS_WBR,
-    PROP_POS_ML, PROP_POS_MC, PROP_POS_MR,
-    PROP_POS_AML, PROP_POS_AMC, PROP_POS_AMR,
-    PROP_POS_ST,
-]
+DEFAULT_VERSION = 3727
+DEFAULT_RULE_GROUP_VERSION = 1630
+DEFAULT_EDVB = 1
+DEFAULT_ORVS = "2600"
+DEFAULT_SVVS = "2600"
+DEFAULT_NNAT_ODVL = 3285649982205  # safe default seen in samples
 
-# XML constants
-XML_VERSION = 3727
-RULE_GROUP_VERSION = 1630
-ORVS = "2600"
-SVVS = "2600"
+INT32_MOD = 2147483646
+INT64_MOD = 9223372036854775806
 
+# ---- stable ids ----
+def _sha(seed: int, i: int, label: str) -> int:
+    h = hashlib.sha256(f"{seed}|{i}|{label}".encode("utf-8")).digest()
+    return int.from_bytes(h, "big")
 
-def excel_safe_text(n_str: str) -> str:
-    return f'="{n_str}"'
+def _id32(seed: int, i: int, label: str) -> int:
+    return 1 + (_sha(seed, i, label) % INT32_MOD)
 
+def _id64(seed: int, i: int, label: str) -> int:
+    return 1 + (_sha(seed, i, label) % INT64_MOD)
 
-def _read_name_csv(path: Path) -> List[str]:
-    with path.open("r", encoding="utf-8", newline="") as f:
-        r = csv.DictReader(f)
-        if not r.fieldnames or "name" not in r.fieldnames:
-            raise ValueError(f"Expected a 'name' column in {path}")
-        out: List[str] = []
-        for row in r:
-            val = (row.get("name") or "").strip()
-            if val:
-                out.append(val)
-        if not out:
-            raise ValueError(f"No names found in {path}")
-        return out
+def _uniq(make_id, seed: int, i: int, label: str, used: set, extra_ok=None) -> int:
+    bump = 0
+    while True:
+        lbl = label if bump == 0 else f"{label}|{bump}"
+        v = make_id(seed, i, lbl)
+        if v in used:
+            bump += 1
+            continue
+        if extra_ok and not extra_ok(v):
+            bump += 1
+            continue
+        used.add(v)
+        return v
 
+# ---- csv helpers ----
+def _detect_delim(sample: str) -> str:
+    return "\t" if sample.count("\t") > sample.count(",") else ","
 
-@dataclass(frozen=True)
-class Club:
-    dbid: int
-    large: int
-    name: str = ""
+def _strip_excel(s: str) -> str:
+    s = (s or "").strip()
+    return s[2:-1] if s.startswith('="') and s.endswith('"') else s
 
-
-@dataclass(frozen=True)
-class City:
-    dbid: int
-    large: int
-    name: str = ""
-
-
-def _to_int(s: Optional[str]) -> Optional[int]:
-    """Parse integers from CSV cells robustly.
-
-    Supports:
-      - plain ints: 123
-      - Excel-safe text/formulas: ="123"
-      - quoted: "123"
-      - scientific notation strings: 6.743E+12 (best-effort via Decimal)
-    """
-    if s is None:
-        return None
-    s = str(s).strip()
+def _to_int(s: str) -> Optional[int]:
+    s = _strip_excel(s)
     if not s:
         return None
-
-    # Excel-safe formula like ="123456"
-    m = re.search(r"(\d+)", s)
-    if m:
+    if re.fullmatch(r"[0-9]+", s):
         try:
-            return int(m.group(1))
-        except Exception:
-            pass
-
-    # scientific notation (best-effort; may already have lost precision if Excel rewrote it)
-    if re.fullmatch(r"[0-9]+(\.[0-9]+)?[eE][+-]?[0-9]+", s):
-        try:
-            from decimal import Decimal
-            return int(Decimal(s))
-        except Exception:
+            return int(s)
+        except ValueError:
             return None
+    return None
 
-    try:
-        return int(s)
-    except Exception:
-        return None
+def load_master_library(path: str) -> Tuple[List[Tuple[int,int,str]], List[Tuple[int,int,str]], List[Tuple[int,int,str]]]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
 
-
-def load_clubs_cities(path: Path) -> Tuple[List[Club], List[City]]:
-    """Load clubs/cities from a combined CSV.
-
-    Expected columns (case-insensitive; extra columns ignored):
-      type, club_dbid, club_large, club_name, city_dbid, city_large, city_name
-
-    Backwards-compatible column aliases:
-      - kind (alias of type)
-      - ttea_large / ttea_large_text (alias of club_large / club_large_text)
-
-    Also supports Excel-safe columns produced by the extractor:
-      club_dbid_text, club_large_text, city_dbid_text, city_large_text
-
-    Handles common gotchas:
-      - CSV saved by Excel with ';' separator (auto-detected)
-      - numbers rewritten in scientific notation (prefers *_text columns)
-      - whitespace / case differences in headers
-    """
-    clubs: Dict[Tuple[int, int], Club] = {}
-    cities: Dict[Tuple[int, int], City] = {}
-
-    with path.open("r", encoding="utf-8-sig", newline="") as f:
-        sample = f.read(4096)
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        head = f.readline()
+        if not head:
+            raise ValueError("CSV empty")
+        delim = _detect_delim(head)
         f.seek(0)
 
-        try:
-            dialect = csv.Sniffer().sniff(sample, delimiters=[",", ";", "\t", "|"])
-        except Exception:
-            dialect = csv.excel  # comma by default
-
-        r = csv.DictReader(f, dialect=dialect)
-        if not r.fieldnames:
-            raise ValueError("clubs_cities.csv has no header")
-
-        first_data_row_preview: Optional[Dict[str, Any]] = None
+        r = csv.DictReader(f, delimiter=delim)
+        clubs, cities, nations = {}, {}, {}
 
         for row in r:
-            # normalize keys to be resilient to Excel/header edits
-            rown = {(k or "").strip().lower(): v for k, v in row.items()}
+            d = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
 
-            if first_data_row_preview is None and any((v or "").strip() for v in rown.values()):
-                first_data_row_preview = dict(list(rown.items())[:12])
-
-            t = (rown.get("type") or rown.get("kind") or rown.get("row_type") or "").strip().lower()
-
-            club_dbid = _to_int(rown.get("club_dbid")) or _to_int(rown.get("club_dbid_text"))
-
-            # club_large may appear as club_large, ttea_large, or (rarely) ttea
-            club_large = (
-                _to_int(rown.get("club_large") or rown.get("ttea_large") or rown.get("ttea"))
-                or _to_int(rown.get("club_large_text") or rown.get("ttea_large_text"))
-            )
-            club_name = (rown.get("club_name") or "").strip()
-
-            city_dbid = _to_int(rown.get("city_dbid")) or _to_int(rown.get("city_dbid_text"))
-            city_large = _to_int(rown.get("city_large")) or _to_int(rown.get("city_large_text"))
-            city_name = (rown.get("city_name") or "").strip()
-
-            if t == "club":
-                if club_dbid is None or club_large is None:
+            kind = (d.get("type") or d.get("kind") or "").strip().lower()
+            if kind not in ("club", "city", "nation"):
+                if d.get("club_dbid") or d.get("club_large") or d.get("ttea_large") or d.get("ttea_large_text"):
+                    kind = "club"
+                elif d.get("city_dbid") or d.get("city_large") or d.get("city_large_text"):
+                    kind = "city"
+                elif (
+                    d.get("nation_dbid")
+                    or d.get("nation_large")
+                    or d.get("nnat")
+                    or d.get("nnat_large")
+                    or d.get("nnat_large_text")
+                ):
+                    kind = "nation"
+                else:
                     continue
-                key = (club_dbid, club_large)
-                if key not in clubs:
-                    clubs[key] = Club(dbid=club_dbid, large=club_large, name=club_name)
 
-            elif t == "city":
-                if city_dbid is None or city_large is None:
+            if kind == "club":
+                dbid = _to_int(d.get("club_dbid", ""))
+                large = (
+                    _to_int(d.get("club_large", "")) or
+                    _to_int(d.get("ttea_large", "")) or
+                    _to_int(d.get("ttea_large_text", "")) or
+                    _to_int(d.get("ttea", ""))
+                )
+                name = d.get("club_name", "")
+                if dbid is None or large is None:
                     continue
-                key = (city_dbid, city_large)
-                if key not in cities:
-                    cities[key] = City(dbid=city_dbid, large=city_large, name=city_name)
+                clubs[(dbid, large)] = (dbid, large, name)
 
-    if not clubs:
-        raise ValueError(
-            "No clubs loaded from clubs_cities.csv. "
-            "Check that the file contains rows where type=club (or kind=club) and club_dbid/club_large (or ttea_large) are present. "
-            f"Detected headers: {list((r.fieldnames or []))}. "
-            f"First row preview: {first_data_row_preview}"
-        )
-    if not cities:
-        raise ValueError(
-            "No cities loaded from clubs_cities.csv. "
-            "Check that the file contains rows where type=city and city_dbid/city_large are present. "
-            f"Detected headers: {list((r.fieldnames or []))}. "
-            f"First row preview: {first_data_row_preview}"
-        )
-    return list(clubs.values()), list(cities.values())
+            elif kind == "city":
+                dbid = _to_int(d.get("city_dbid", ""))
+                large = _to_int(d.get("city_large", "")) or _to_int(d.get("city_large_text", ""))
+                name = d.get("city_name", "")
+                if dbid is None or large is None:
+                    continue
+                cities[(dbid, large)] = (dbid, large, name)
 
+            else:  # nation
+                dbid = _to_int(d.get("nation_dbid", "")) or _to_int(d.get("dbid", ""))
+                large = (
+                    _to_int(d.get("nation_large", "")) or
+                    _to_int(d.get("nnat_large", "")) or
+                    _to_int(d.get("nnat_large_text", "")) or
+                    _to_int(d.get("nnat", ""))
+                )
+                name = d.get("nation_name", "")
+                if dbid is None or large is None:
+                    continue
+                nations[(dbid, large)] = (dbid, large, name)
 
+        return list(clubs.values()), list(cities.values()), list(nations.values())
 
-class StableIdGenerator:
-    def __init__(self, seed: int):
-        self.seed = seed
-        self.used_int32: Set[int] = set()
-        self.used_int64_person: Set[int] = set()
-        self.used_int64_change: Set[int] = set()
-        # FM appears to key some identifiers by low 32 bits; keep those unique too.
-        self.used_person_low32: Set[int] = set()
-        self.used_change_low32: Set[int] = set()
-
-    @staticmethod
-    def _sha_to_int(seed: int, i: int, label: str) -> int:
-        digest = hashlib.sha256(f"{seed}|{i}|{label}".encode("utf-8")).digest()
-        return int.from_bytes(digest, "big")
-
-    def _unique(self, used: Set[int], seed: int, i: int, label: str, modulus: int) -> int:
-        # collision-safe with deterministic suffix
-        k = 0
-        while True:
-            lbl = label if k == 0 else f"{label}|{k}"
-            n = self._sha_to_int(seed, i, lbl)
-            val = 1 + (n % modulus)
-            if val not in used:
-                used.add(val)
-                return val
-            k += 1
-
-    def int32(self, i: int, label: str) -> int:
-        return self._unique(self.used_int32, self.seed, i, label, 2147483646)
-
-    def int64_person(self, i: int, label: str) -> int:
-        """Signed-safe int64 for person db_unique_id.
-
-        FM26 appears to silently reject person records when the low 32 bits of the
-        db_unique_id are >= 2^31 (2147483648). We enforce:
-            (val & 0xFFFFFFFF) < 2147483648
-
-        This stays deterministic by re-hashing with a suffix label|k until valid,
-        and also remains collision-safe within one file.
-        """
-        modulus = 9223372036854775806
-        k = 0
-        while True:
-            lbl = label if k == 0 else f"{label}|{k}"
-            n = self._sha_to_int(self.seed, i, lbl)
-            val = 1 + (n % modulus)
-            # signed-safe low 32-bit requirement
-            if (val & 0xFFFFFFFF) >= 2147483648:
-                k += 1
+# ---- names ----
+def _load_names(path: str) -> List[str]:
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    out = []
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        for row in csv.reader(f):
+            if not row:
                 continue
-            low32 = val & 0xFFFFFFFF
-            if val not in self.used_int64_person and low32 not in self.used_person_low32:
-                self.used_int64_person.add(val)
-                self.used_person_low32.add(low32)
-                return val
-            k += 1
-
-    def int64_change(self, i: int, label: str) -> int:
-        """Signed-safe int64 for change record db_unique_id.
-
-        In practice FM seems happiest when the low 32 bits are < 2^31 and
-        also unique within the file, similar to person ids.
-        """
-        modulus = 9223372036854775806
-        k = 0
-        while True:
-            lbl = label if k == 0 else f"{label}|{k}"
-            n = self._sha_to_int(self.seed, i, lbl)
-            val = 1 + (n % modulus)
-            low32 = val & 0xFFFFFFFF
-            if low32 >= 2147483648:
-                k += 1
-                continue
-            if val not in self.used_int64_change and low32 not in self.used_change_low32:
-                self.used_int64_change.add(val)
-                self.used_change_low32.add(low32)
-                return val
-            k += 1
-
-
-def _date_dict_to_xml(tag_id: str, day: int, month: int, year: int, time: int = 0) -> str:
-    return f'<date id="{tag_id}" day="{day}" month="{month}" year="{year}" time="{time}"/>'
-
-
-def _record_header(db_unique_id: int, prop: int, new_value_xml: str, *, db_random_id: int, extra: str = "") -> str:
-    # extra can include odvl / language flags etc.
-    return (
-        "\t\t<record>\n"
-        "\t\t\t<integer id=\"database_table_type\" value=\"1\"/>\n"
-        f"\t\t\t<large id=\"db_unique_id\" value=\"{db_unique_id}\"/>\n"
-        f"\t\t\t<unsigned id=\"property\" value=\"{prop}\"/>\n"
-        f"\t\t\t{new_value_xml}\n"
-        f"\t\t\t<integer id=\"version\" value=\"{XML_VERSION}\"/>\n"
-        f"\t\t\t<integer id=\"db_random_id\" value=\"{db_random_id}\"/>\n"
-        f"{extra}"
-        "\t\t</record>\n"
-    )
-
-
-def _string_new_value(val: str) -> str:
-    # Escape minimally for XML attributes
-    val = val.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-    return f'<string id="new_value" value="{val}"/>'
-
-
-def _integer_new_value(val: int) -> str:
-    return f'<integer id="new_value" value="{val}"/>'
-
-
-def _null_odvl() -> str:
-    return "\t\t\t<null id=\"odvl\"/>\n"
-
-
-def _int_odvl(v: int = 0) -> str:
-    return f"\t\t\t<integer id=\"odvl\" value=\"{v}\"/>\n"
-
-
-def _string_odvl_empty() -> str:
-    return "\t\t\t<string id=\"odvl\" value=\"\"/>\n"
-
-
-def _lang_flag() -> str:
-    return "\t\t\t<boolean id=\"is_language_field\" value=\"true\"/>\n"
-
-
-def _nation_new_value() -> str:
-    return (
-        "<record id=\"new_value\">"
-        f"<large id=\"Nnat\" value=\"{SCOTLAND_NNAT}\"/>"
-        f"<integer id=\"DBID\" value=\"{SCOTLAND_DBID}\"/>"
-        "</record>"
-    )
-
-
-def _nation_odvl() -> str:
-    return (
-        "\t\t\t<record id=\"odvl\">\n"
-        f"\t\t\t\t<large id=\"Nnat\" value=\"{SCOTLAND_ODVL_NNAT}\"/>\n"
-        "\t\t\t</record>\n"
-    )
-
-
-def _club_new_value(club: Club) -> str:
-    return (
-        "<record id=\"new_value\">"
-        f"<large id=\"Ttea\" value=\"{club.large}\"/>"
-        f"<integer id=\"DBID\" value=\"{club.dbid}\"/>"
-        "</record>"
-    )
-
-
-def _city_new_value(city: City) -> str:
-    return (
-        "<record id=\"new_value\">"
-        f"<large id=\"city\" value=\"{city.large}\"/>"
-        f"<integer id=\"DBID\" value=\"{city.dbid}\"/>"
-        "</record>"
-    )
-
-
-def _random_date_for_age(rng: random.Random, base_year: int, age: int) -> Tuple[int, int, int]:
-    year = base_year - age
-    month = rng.randint(1, 12)
-    day = rng.randint(1, 28)
-    return day, month, year
-
-
-def _transfer_value_from_pa(pa: int) -> int:
-    # Simple scale: PA 80..200 -> 100k..50m
-    lo_pa, hi_pa = 80, 200
-    lo_val, hi_val = 100_000, 50_000_000
-    pa_clamped = max(lo_pa, min(hi_pa, pa))
-    t = (pa_clamped - lo_pa) / (hi_pa - lo_pa)
-    return int(lo_val + t * (hi_val - lo_val))
-
-
-def _pick_foot(rng: random.Random) -> Tuple[int, int]:
-    # returns (left, right) on 1..20
-    r = rng.random()
-    if r < 0.75:
-        # right footed
-        right = rng.randint(17, 20)
-        left = rng.randint(1, 12)
-    elif r < 0.93:
-        # left footed
-        left = rng.randint(17, 20)
-        right = rng.randint(1, 12)
-    else:
-        # both
-        left = rng.randint(15, 20)
-        right = rng.randint(15, 20)
-    return left, right
-
-
-def _pick_position_profile(rng: random.Random) -> Dict[int, int]:
-    # Return mapping of position property -> value (1..20)
-    out = {p: 1 for p in ALL_POS_PROPS}
-
-    r = rng.random()
-    if r < 0.10:
-        primary = PROP_POS_GK
-    elif r < 0.45:
-        primary = rng.choice([PROP_POS_DL, PROP_POS_DC, PROP_POS_DR, PROP_POS_WBL, PROP_POS_WBR])
-    elif r < 0.85:
-        primary = rng.choice([PROP_POS_DM, PROP_POS_ML, PROP_POS_MC, PROP_POS_MR, PROP_POS_AML, PROP_POS_AMC, PROP_POS_AMR])
-    else:
-        primary = PROP_POS_ST
-
-    if primary == PROP_POS_GK:
-        out[PROP_POS_GK] = rng.randint(15, 20)
-        return out
-
-    out[primary] = rng.randint(15, 20)
-
-    # Add a light secondary chance for adjacent roles
-    if primary in (PROP_POS_DL, PROP_POS_WBL):
-        out[PROP_POS_DL] = max(out[PROP_POS_DL], rng.randint(10, 16))
-        out[PROP_POS_WBL] = max(out[PROP_POS_WBL], rng.randint(10, 16))
-        out[PROP_POS_ML] = max(out[PROP_POS_ML], rng.randint(6, 12))
-    elif primary in (PROP_POS_DR, PROP_POS_WBR):
-        out[PROP_POS_DR] = max(out[PROP_POS_DR], rng.randint(10, 16))
-        out[PROP_POS_WBR] = max(out[PROP_POS_WBR], rng.randint(10, 16))
-        out[PROP_POS_MR] = max(out[PROP_POS_MR], rng.randint(6, 12))
-    elif primary == PROP_POS_DC:
-        out[PROP_POS_DC] = max(out[PROP_POS_DC], rng.randint(15, 20))
-        out[PROP_POS_DM] = max(out[PROP_POS_DM], rng.randint(6, 12))
-    elif primary == PROP_POS_DM:
-        out[PROP_POS_DM] = max(out[PROP_POS_DM], rng.randint(15, 20))
-        out[PROP_POS_MC] = max(out[PROP_POS_MC], rng.randint(6, 12))
-    elif primary in (PROP_POS_MC, PROP_POS_AMC):
-        out[PROP_POS_MC] = max(out[PROP_POS_MC], rng.randint(12, 18))
-        out[PROP_POS_AMC] = max(out[PROP_POS_AMC], rng.randint(8, 16))
-        out[PROP_POS_DM] = max(out[PROP_POS_DM], rng.randint(4, 10))
-    elif primary == PROP_POS_ST:
-        out[PROP_POS_ST] = max(out[PROP_POS_ST], rng.randint(15, 20))
-        out[PROP_POS_AMC] = max(out[PROP_POS_AMC], rng.randint(4, 10))
-
-    out[PROP_POS_GK] = 1
+            v = (row[0] or "").strip()
+            if v and v.lower() != "name":
+                out.append(v)
+    if not out:
+        raise ValueError(f"No names loaded from {path}")
     return out
 
+# ---- randomness ----
+def _days_in_month(y: int, m: int) -> int:
+    if m == 12:
+        return (dt.date(y + 1, 1, 1) - dt.date(y, m, 1)).days
+    return (dt.date(y, m + 1, 1) - dt.date(y, m, 1)).days
 
-def build_player_records(
-    *,
-    i: int,
-    idgen: StableIdGenerator,
-    rng: random.Random,
-    first_name: str,
-    surname: str,
-    club: Club,
-    city: City,
-    age: int,
-    ca: int,
-    pa: int,
-    base_year: int,
-    manifest_sink=None,
-) -> str:
-    # IDs
-    person_id = idgen.int64_person(i, "person_id")
-    change_uid = idgen.int64_change(i, "change_uid")
+def _random_dob(rng: random.Random, age: int, base_year: int) -> dt.date:
+    y = base_year - age
+    m = rng.randint(1, 12)
+    d = rng.randint(1, _days_in_month(y, m))
+    return dt.date(y, m, d)
 
-    # Random properties
-    common_name = first_name
-    height = rng.randint(150, 210)
+def _parse_ymd(s: str) -> dt.date:
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", (s or "").strip())
+    if not m:
+        raise ValueError("DOB must be YYYY-MM-DD")
+    y, mo, d = map(int, m.groups())
+    return dt.date(y, mo, d)
 
-    dob_day, dob_month, dob_year = _random_date_for_age(rng, base_year, age)
+def _pick_weighted(rng: random.Random, items: Sequence[Tuple[str, float]]) -> str:
+    tot = sum(w for _, w in items)
+    x = rng.random() * tot
+    acc = 0.0
+    for v, w in items:
+        acc += w
+        if x <= acc:
+            return v
+    return items[-1][0]
 
-    left_foot, right_foot = _pick_foot(rng)
-    pos = _pick_position_profile(rng)
+def _random_positions(rng: random.Random) -> List[str]:
+    grp = _pick_weighted(rng, [("GK", 0.10), ("DEF", 0.35), ("MID", 0.40), ("ATT", 0.15)])
+    if grp == "GK":
+        return ["GK"]
+    pool = {
+        "DEF": ["DL", "DC", "DR", "WBL", "WBR", "DM"],
+        "MID": ["DM", "ML", "MC", "MR", "AML", "AMC", "AMR"],
+        "ATT": ["AML", "AMC", "AMR", "ST"],
+    }[grp]
+    n = 1
+    r = rng.random()
+    if r < 0.25:
+        n = 2
+    elif r < 0.30:
+        n = 3
+    rng.shuffle(pool)
+    return pool[:n]
 
+def _pos_map(rng: random.Random, selected: List[str]) -> Dict[str, int]:
+    sel = [p for p in (selected or []) if p in POS_PROPS]
+    if not sel:
+        sel = _random_positions(rng)
+    if "GK" in sel:
+        return {"GK": rng.randint(15, 20)}
+    return {p: rng.randint(15, 20) for p in sel}
 
-    # Optional manifest row (helps debug missing imports)
-    if manifest_sink is not None:
-        primary_pos_prop = max(pos.items(), key=lambda kv: kv[1])[0] if pos else ""
-        manifest_sink.writerow([
-            i,
-            change_uid,
-            person_id,
-            first_name,
-            surname,
-            f"{dob_year:04d}-{dob_month:02d}-{dob_day:02d}",
-            age,
-            ca,
-            pa,
-            club.dbid,
-            club.large,
-            club.name,
-            city.dbid,
-            city.large,
-            city.name,
-            left_foot,
-            right_foot,
-            primary_pos_prop,
-        ])
+def _foot(rng: random.Random) -> Tuple[int, int]:
+    k = _pick_weighted(rng, [("R", 0.72), ("L", 0.20), ("B", 0.08)])
+    if k == "R":
+        return rng.randint(1, 10), rng.randint(15, 20)
+    if k == "L":
+        return rng.randint(15, 20), rng.randint(1, 10)
+    return rng.randint(15, 20), rng.randint(15, 20)
 
-    wage = rng.randint(0, 200)
-    rep_current = rng.randint(0, 50)
-    rep_home = rng.randint(0, 60)
-    rep_world = rng.randint(0, 60)
+def _tv_from_pa(pa: int) -> int:
+    x = max(0, min(200, pa))
+    return max(100_000, min(1_000_000_000, int(200_000 + ((x / 200.0) ** 3) * 999_800_000)))
 
-    transfer_value = _transfer_value_from_pa(pa)
+# ---- xml helpers ----
+def _int(i: str, v: int) -> str:
+    return f'<integer id="{i}" value="{v}"/>'
 
-    # Constant-ish dates (match your examples)
-    joined_day, joined_month, joined_year = 1, 2, 2025
-    exp_day, exp_month, exp_year = 28, 2, 2029
+def _large(i: str, v: int) -> str:
+    return f'<large id="{i}" value="{v}"/>'
 
-    # 1) Player "create" record (database_table_type=55)
-    recs = []
-    recs.append(
-        "\t\t<record><!-- This is require per player record -->\n"
-        "\t\t\t<integer id=\"database_table_type\" value=\"55\"/>\n"
-        f"\t\t\t<large id=\"db_unique_id\" value=\"{change_uid}\"/>\n"
-        "\t\t\t<unsigned id=\"property\" value=\"1094992978\"/>\n"
-        "\t\t\t<record id=\"new_value\">\n"
-        "\t\t\t\t<integer id=\"database_table_type\" value=\"1\"/>\n"
-        "\t\t\t\t<unsigned id=\"dcty\" value=\"2\"/>\n"
-        f"\t\t\t\t<large id=\"db_unique_id\" value=\"{person_id}\"/>\n"
-        "\t\t\t</record>\n"
-        f"\t\t\t<integer id=\"version\" value=\"{XML_VERSION}\"/>\n"
-        f"\t\t\t<integer id=\"db_random_id\" value=\"{idgen.int32(i, 'create_random')}\"/>\n"
-        "\t\t\t<boolean id=\"is_client_field\" value=\"true\"/>\n"
-        "\t\t</record>\n"
-    )
+def _uns(i: str, v: int) -> str:
+    return f'<unsigned id="{i}" value="{v}"/>'
 
-    # Helpers for IDs per record
-    def rid(lbl: str) -> int:
-        return idgen.int32(i, lbl)
+def _str(i: str, s: str) -> str:
+    return f'<string id="{i}" value="{xesc(s)}"/>'
 
-    # 2) Names
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_FIRST_NAME,
-            _string_new_value(first_name),
-            db_random_id=rid("first_name"),
-            extra=_string_odvl_empty() + _lang_flag(),
-        )
-    )
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_SECOND_NAME,
-            _string_new_value(surname),
-            db_random_id=rid("second_name"),
-            extra=_string_odvl_empty() + _lang_flag(),
-        )
-    )
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_COMMON_NAME,
-            _string_new_value(common_name),
-            db_random_id=rid("common_name"),
-            extra=_string_odvl_empty() + _lang_flag(),
-        )
-    )
+def _bool(i: str, v: bool) -> str:
+    return f'<boolean id="{i}" value="{"true" if v else "false"}"/>'
 
-    # 3) Bio-ish basics
-    recs.append(_record_header(person_id, PROP_HEIGHT, _integer_new_value(height), db_random_id=rid("height"), extra=_int_odvl(0)))
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_DOB,
-            _date_dict_to_xml("new_value", dob_day, dob_month, dob_year),
-            db_random_id=rid("dob"),
-            extra=f"\t\t\t{_date_dict_to_xml('odvl', 1, 1, 1900)}\n",
-        )
-    )
+def _null(i: str) -> str:
+    return f'<null id="{i}"/>'
 
-    # 4) City of birth
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_CITY_OF_BIRTH,
-            _city_new_value(city),
-            db_random_id=rid("city"),
-            extra=_null_odvl(),
-        )
-    )
+def _date(i: str, d: dt.date) -> str:
+    return f'<date id="{i}" day="{d.day}" month="{d.month}" year="{d.year}" time="0"/>'
 
-    # 5) Nation + nationality info
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_NATION,
-            _nation_new_value(),
-            db_random_id=rid("nation"),
-            extra=_nation_odvl(),
-        )
-    )
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_NATIONALITY_INFO,
-            _integer_new_value(NATIONALITY_INFO_VALUE),
-            db_random_id=rid("nat_info"),
-            extra=_int_odvl(0),
-        )
-    )
+def _rec(inner: str, comment: str = "") -> str:
+    c = f'<!-- {comment} -->' if comment else ''
+    return f'\t\t<record>{c}\n{inner}\t\t</record>\n'
 
-    # 6) Club
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_CLUB,
-            _club_new_value(club),
-            db_random_id=rid("club"),
-            extra=_null_odvl(),
-        )
-    )
+def _attr(person_uid: int, prop: int, newv: str, rid: int, ver: int, extra: str = "", odvl: str = "") -> str:
+    s = f'\t\t\t{_int("database_table_type", TBL_PLAYER)}\n'
+    s += f'\t\t\t{_large("db_unique_id", person_uid)}\n'
+    s += f'\t\t\t{_uns("property", prop)}\n'
+    s += f'\t\t\t{newv}\n'
+    s += f'\t\t\t{_int("version", ver)}\n'
+    s += f'\t\t\t{_int("db_random_id", rid)}\n'
+    if extra:
+        s += extra
+    if odvl:
+        s += f'\t\t\t{odvl}\n'
+    return s
 
-    # 7) Contract fields
-    recs.append(_record_header(person_id, PROP_WAGE, _integer_new_value(wage), db_random_id=rid("wage"), extra=_int_odvl(0)))
+def _create(create_uid: int, person_uid: int, rid: int, ver: int) -> str:
+    inner = f'\t\t\t{_int("database_table_type", TBL_CREATE)}\n'
+    inner += f'\t\t\t{_large("db_unique_id", create_uid)}\n'
+    inner += f'\t\t\t{_uns("property", CREATE_PROPERTY)}\n'
+    inner += '\t\t\t<record id="new_value">\n'
+    inner += f'\t\t\t\t{_int("database_table_type", TBL_PLAYER)}\n'
+    inner += f'\t\t\t\t{_uns("dcty", 2)}\n'
+    inner += f'\t\t\t\t{_large("db_unique_id", person_uid)}\n'
+    inner += '\t\t\t</record>\n'
+    inner += f'\t\t\t{_int("version", ver)}\n'
+    inner += f'\t\t\t{_int("db_random_id", rid)}\n'
+    inner += f'\t\t\t{_bool("is_client_field", True)}\n'
+    return _rec(inner, "Required per player record")
 
-    # date joined club
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_DATE_JOINED_CLUB,
-            _date_dict_to_xml("new_value", joined_day, joined_month, joined_year),
-            db_random_id=rid("date_joined"),
-            extra=f"\t\t\t{_date_dict_to_xml('odvl', 1, 7, joined_year)}\n",
-        )
-    )
+def _count_existing(xml_path: str) -> int:
+    with open(xml_path, "rb") as f:
+        data = f.read()
+    return data.count(b'<unsigned id="property" value="1094992978"/>')
 
-    # date moved to nation (set to DOB)
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_DATE_MOVED_TO_NATION,
-            _date_dict_to_xml("new_value", dob_day, dob_month, dob_year),
-            db_random_id=rid("date_moved"),
-            extra=f"\t\t\t{_date_dict_to_xml('odvl', 1, 1, 1900)}\n",
-        )
-    )
+def _append(existing_xml: str, frag: str, out_xml: str) -> None:
+    with open(existing_xml, "rb") as f:
+        data = f.read()
+    marker = b'<integer id="EDvb"'
+    mpos = data.find(marker)
+    if mpos == -1:
+        raise ValueError("EDvb marker not found (not an FM db changes XML?)")
+    insert = data.rfind(b"</list>", 0, mpos)
+    if insert == -1:
+        raise ValueError("Cannot find db_changes closing </list> before EDvb")
+    with open(out_xml, "wb") as f:
+        f.write(data[:insert])
+        f.write(frag.encode("utf-8"))
+        f.write(data[insert:])
 
-    # date last signed
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_DATE_LAST_SIGNED,
-            _date_dict_to_xml("new_value", joined_day, joined_month, joined_year),
-            db_random_id=rid("date_signed"),
-            extra=f"\t\t\t{_date_dict_to_xml('odvl', 1, 7, joined_year)}\n",
-        )
-    )
-
-    # contract expires
-    recs.append(
-        _record_header(
-            person_id,
-            PROP_CONTRACT_EXPIRES,
-            _date_dict_to_xml("new_value", exp_day, exp_month, exp_year),
-            db_random_id=rid("contract_expires"),
-            extra=f"\t\t\t{_date_dict_to_xml('odvl', 1, 1, 1900)}\n",
-        )
-    )
-
-    # squad status
-    recs.append(_record_header(person_id, PROP_SQUAD_STATUS, _integer_new_value(9), db_random_id=rid("squad_status"), extra=_null_odvl()))
-
-    # 8) Abilities
-    recs.append(_record_header(person_id, PROP_CA, _integer_new_value(ca), db_random_id=rid("ca"), extra=_int_odvl(0)))
-    recs.append(_record_header(person_id, PROP_PA, _integer_new_value(pa), db_random_id=rid("pa"), extra=_int_odvl(0)))
-
-    # 9) Reputation
-    recs.append(_record_header(person_id, PROP_REP_CURRENT, _integer_new_value(rep_current), db_random_id=rid("rep_current"), extra=_int_odvl(0)))
-    recs.append(_record_header(person_id, PROP_REP_HOME, _integer_new_value(rep_home), db_random_id=rid("rep_home"), extra=_int_odvl(0)))
-    recs.append(_record_header(person_id, PROP_REP_WORLD, _integer_new_value(rep_world), db_random_id=rid("rep_world"), extra=_int_odvl(0)))
-
-    # 10) Feet (strings)
-    recs.append(_record_header(person_id, PROP_LEFT_FOOT, _string_new_value(str(left_foot)), db_random_id=rid("left_foot"), extra=_int_odvl(0)))
-    recs.append(_record_header(person_id, PROP_RIGHT_FOOT, _string_new_value(str(right_foot)), db_random_id=rid("right_foot"), extra=_int_odvl(0)))
-
-    # 11) Transfer value
-    recs.append(_record_header(person_id, PROP_TRANSFER_VALUE, _integer_new_value(transfer_value), db_random_id=rid("transfer_value"), extra=_int_odvl(0)))
-
-    # 12) Positions
-    for prop_id, val in pos.items():
-        recs.append(_record_header(person_id, prop_id, _integer_new_value(val), db_random_id=rid(f"pos_{prop_id}"), extra=_int_odvl(0)))
-
-    return "".join(recs)
-
-
-def build_xml(players_xml: str) -> str:
-    return (
-        "<record>\n"
-        "\t<list id=\"verf\"/>\n"
-        "\t<list id=\"db_changes\">\n"
-        f"{players_xml}"
-        "\t</list>\n"
-        "\t<integer id=\"EDvb\" value=\"1\"/>\n"
-        "\t<string id=\"EDfb\" value=\"\"/>\n"
-        f"\t<integer id=\"version\" value=\"{XML_VERSION}\"/>\n"
-        f"\t<integer id=\"rule_group_version\" value=\"{RULE_GROUP_VERSION}\"/>\n"
-        "\t<boolean id=\"beta\" value=\"false\"/>\n"
-        f"\t<string id=\"orvs\" value=\"{ORVS}\"/>\n"
-        f"\t<string id=\"svvs\" value=\"{SVVS}\"/>\n"
-        "</record>\n"
-    )
-
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Generate FM26 DB Changes XML of youth players with stable IDs.")
-    p.add_argument("--clubs_cities", required=True, help="Input clubs_cities.csv")
-    p.add_argument("--count", type=int, required=True, help="Number of players to generate")
-    p.add_argument("--output", required=True, help="Output XML path")
-
-    p.add_argument("--age_min", type=int, default=14)
-    p.add_argument("--age_max", type=int, default=16)
-    p.add_argument("--ca_min", type=int, default=20)
-    p.add_argument("--ca_max", type=int, default=160)
-    p.add_argument("--pa_min", type=int, default=80)
-    p.add_argument("--pa_max", type=int, default=200)
-
-    p.add_argument("--seed", type=int, default=None, help="Seed for deterministic output")
-    p.add_argument("--start_index", type=int, default=0, help="Start index offset for deterministic IDs (useful when generating multiple files)")
-    p.add_argument("--base_year", type=int, default=2025, help="Base year used to compute DOB from age")
-
-    p.add_argument(
-        "--first_names",
-        default=str(Path(__file__).with_name("scottish_male_first_names_2500.csv")),
-        help="CSV of first names (header: name)",
-    )
-    p.add_argument(
-        "--surnames",
-        default=str(Path(__file__).with_name("scottish_surnames_2500.csv")),
-        help="CSV of surnames (header: name)",
-    )
-    p.add_argument(
-        "--chunk_size",
-        type=int,
-        default=0,
-        help="If >0, split output into multiple XML files of this many players each (recommended for very large imports)",
-    )
-    p.add_argument(
-        "--manifest",
-        default="",
-        help="Optional path to write a manifest CSV of generated players (IDs/names/club/city/CA/PA)",
-    )
-
-    return p.parse_args()
-
-
-
-
-def main() -> int:
-    args = parse_args()
-
-    clubs_cities_path = Path(args.clubs_cities)
-    out_path = Path(args.output)
-
-    if args.count <= 0:
-        raise SystemExit("--count must be > 0")
-
-    # Basic sanity checks (avoids confusing FM import behavior).
-    if args.age_min > args.age_max:
-        raise SystemExit(f"--age_min ({args.age_min}) cannot be greater than --age_max ({args.age_max})")
-    if args.ca_min > args.ca_max:
-        raise SystemExit(f"--ca_min ({args.ca_min}) cannot be greater than --ca_max ({args.ca_max})")
-    if args.pa_min > args.pa_max:
-        raise SystemExit(f"--pa_min ({args.pa_min}) cannot be greater than --pa_max ({args.pa_max})")
-
-    for k in ("ca_min", "ca_max", "pa_min", "pa_max"):
-        v = int(getattr(args, k))
-        if not (0 <= v <= 200):
-            raise SystemExit(f"--{k} must be between 0 and 200 (FM ability scale). Got {v}.")
-
-    # If no seed supplied, generate one but print it so the user can reproduce.
-    seed = args.seed
+def generate_players_xml(
+    library_csv: str,
+    out_xml: str,
+    count: int,
+    seed: Optional[int] = None,
+    append: bool = False,
+    start_index: int = 0,
+    age_min: int = 14,
+    age_max: int = 16,
+    ca_min: int = 20,
+    ca_max: int = 160,
+    pa_min: int = 80,
+    pa_max: int = 200,
+    base_year: int = 2026,
+    version: int = DEFAULT_VERSION,
+    first_names_csv: str = "scottish_male_first_names_2500.csv",
+    surnames_csv: str = "scottish_surnames_2500.csv",
+    fixed_dob: Optional[dt.date] = None,
+    fixed_height: Optional[int] = None,
+    fixed_club: Optional[Tuple[int, int]] = None,
+    fixed_city: Optional[Tuple[int, int]] = None,
+    fixed_nation: Optional[Tuple[int, int]] = None,
+    fixed_positions: Optional[List[str]] = None,
+    nationality_info_value: int = 85,
+) -> None:
     if seed is None:
-        seed = random.SystemRandom().randint(1, 2147483646)
-        print(f"[info] --seed not provided; using seed={seed}")
+        seed = int(dt.datetime.utcnow().timestamp())
+    if count < 1:
+        raise ValueError("count must be >=1")
+    if not (0 <= ca_min <= ca_max <= 200):
+        raise ValueError("CA must be 0..200")
+    if not (0 <= pa_min <= pa_max <= 200):
+        raise ValueError("PA must be 0..200")
+    if age_max < age_min or age_min < 1:
+        raise ValueError("invalid age range")
+    if fixed_height is not None and not (150 <= fixed_height <= 210):
+        raise ValueError("height must be 150..210")
 
+    clubs, cities, nations = load_master_library(library_csv)
+    if not clubs:
+        raise ValueError("No clubs loaded from master library")
+    if not cities:
+        raise ValueError("No cities loaded from master library")
+    if not nations and fixed_nation is None:
+        raise ValueError("No nations loaded (add at least Scotland)")
+
+    first = _load_names(first_names_csv)
+    sur = _load_names(surnames_csv)
     rng = random.Random(seed)
-    idgen = StableIdGenerator(seed)
 
-    clubs, cities = load_clubs_cities(clubs_cities_path)
+    existing = _count_existing(out_xml) if append and os.path.exists(out_xml) else 0
 
-    first_names = _read_name_csv(Path(args.first_names))
-    surnames = _read_name_csv(Path(args.surnames))
+    used32 = set()
+    used64 = set()
+    used_create = set()
+    used_low32 = set()
 
+    def person_ok(v: int) -> bool:
+        low = v & 0xFFFFFFFF
+        if low >= 2147483648:
+            return False
+        if low in used_low32:
+            return False
+        used_low32.add(low)
+        return True
 
-    # Split into multiple files if requested (helps avoid rare import drops on very large single files)
-    chunk_size = int(args.chunk_size or 0)
-    if chunk_size <= 0:
-        chunk_size = args.count
+    frags = []
+    lang_extra = '\t\t\t<string id="odvl" value=""/>\n\t\t\t<boolean id="is_language_field" value="true"/>\n'
+    odvl0 = _int("odvl", 0)
+    odvl_date = _date("odvl", dt.date(1900, 1, 1))
 
-    # Output paths
-    outputs: List[Path] = []
-    if chunk_size >= args.count:
-        outputs = [out_path]
-    else:
-        stem = out_path.with_suffix("")
-        suffix = out_path.suffix if out_path.suffix else ".xml"
-        total_files = (args.count + chunk_size - 1) // chunk_size
-        outputs = [Path(f"{stem}_{k:04d}{suffix}") for k in range(1, total_files + 1)]
+    for idx in range(count):
+        i = start_index + existing + idx
 
-    # Optional manifest CSV
-    manifest_fp = None
-    manifest_writer = None
-    if args.manifest:
-        manifest_path = Path(args.manifest)
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_fp = manifest_path.open("w", newline="", encoding="utf-8")
-        manifest_writer = csv.writer(manifest_fp)
-        manifest_writer.writerow([
-            "index",
-            "change_uid",
-            "person_id",
-            "first_name",
-            "surname",
-            "dob",
-            "age",
-            "ca",
-            "pa",
-            "club_dbid",
-            "club_large",
-            "club_name",
-            "city_dbid",
-            "city_large",
-            "city_name",
-            "left_foot",
-            "right_foot",
-            "primary_pos_prop",
-        ])
+        create_uid = _uniq(_id64, seed, i, "create_uid", used_create)
+        person_uid = _uniq(_id64, seed, i, "person_uid", used64, extra_ok=person_ok)
 
-    XML_PREFIX = "<record>\n\t<list id=\"verf\"/>\n\t<list id=\"db_changes\">\n"
-    XML_SUFFIX = (
-        "\t</list>\n"
-        "\t<integer id=\"EDvb\" value=\"1\"/>\n"
-        "\t<string id=\"EDfb\" value=\"\"/>\n"
-        f"\t<integer id=\"version\" value=\"{XML_VERSION}\"/>\n"
-        f"\t<integer id=\"rule_group_version\" value=\"{RULE_GROUP_VERSION}\"/>\n"
-        "\t<boolean id=\"beta\" value=\"false\"/>\n"
-        "\t<string id=\"orvs\" value=\"2600\"/>\n"
-        "\t<string id=\"svvs\" value=\"2600\"/>\n"
-        "</record>\n"
-    )
+        rid_create = _uniq(_id32, seed, i, "rid|create", used32)
+        frags.append(_create(create_uid, person_uid, rid_create, version))
 
-    # Stream-write XML (avoids huge RAM use and makes chunking easy)
-    current_chunk = 0
-    out_f = outputs[0].open("w", encoding="utf-8", newline="\n")
-    out_f.write(XML_PREFIX)
+        fn = rng.choice(first)
+        sn = rng.choice(sur)
+        cn = f"{fn} {sn}"
+        height = fixed_height if fixed_height is not None else rng.randint(150, 210)
+        dob = fixed_dob if fixed_dob is not None else _random_dob(rng, rng.randint(age_min, age_max), base_year)
 
-    for local_i in range(args.count):
-        chunk = local_i // chunk_size
-        if chunk != current_chunk:
-            out_f.write(XML_SUFFIX)
-            out_f.close()
-            current_chunk = chunk
-            out_f = outputs[current_chunk].open("w", encoding="utf-8", newline="\n")
-            out_f.write(XML_PREFIX)
-
-        i = args.start_index + local_i
-        first = rng.choice(first_names)
-        last = rng.choice(surnames)
-
-        club = rng.choice(clubs)
-        city = rng.choice(cities)
-
-        age = rng.randint(args.age_min, args.age_max)
-        ca = rng.randint(args.ca_min, args.ca_max)
-        pa = rng.randint(args.pa_min, args.pa_max)
-        # FM tends to be happier when PA >= CA; clamp deterministically.
+        ca = rng.randint(ca_min, ca_max)
+        pa = rng.randint(pa_min, pa_max)
         if pa < ca:
-            pa = min(args.pa_max, ca)
-            if pa < ca:
-                ca = pa
+            pa = ca
 
-        out_f.write(
-            build_player_records(
-                i=i,
-                idgen=idgen,
-                rng=rng,
-                first_name=first,
-                surname=last,
-                club=club,
-                city=city,
-                age=age,
-                ca=ca,
-                pa=pa,
-                base_year=args.base_year,
-                manifest_sink=manifest_writer,
-            )
+        club_dbid, club_large = fixed_club if fixed_club else (lambda x: (x[0], x[1]))(rng.choice(clubs))
+        city_dbid, city_large = fixed_city if fixed_city else (lambda x: (x[0], x[1]))(rng.choice(cities))
+
+        if fixed_nation:
+            nation_dbid, nation_large = fixed_nation
+        else:
+            n = rng.choice(nations)
+            nation_dbid, nation_large = n[0], n[1]
+
+        pos_sel = [p.strip().upper() for p in (fixed_positions or []) if p.strip()]
+        pos_map = _pos_map(rng, pos_sel)
+
+        left, right = _foot(rng)
+        wage = rng.randint(20, 80)
+        rep = 30
+        tv = _tv_from_pa(pa)
+
+        joined = dt.date(base_year, 7, 1)
+        expires = dt.date(base_year + 3, 6, 30)
+
+        def rid(lbl: str) -> int:
+            return _uniq(_id32, seed, i, lbl, used32)
+
+        # string fields (with language flag)
+        frags.append(_rec(_attr(person_uid, PROP_FIRST_NAME, _str("new_value", fn), rid("rid|fn"), version, extra=lang_extra), "First Name"))
+        frags.append(_rec(_attr(person_uid, PROP_SECOND_NAME, _str("new_value", sn), rid("rid|sn"), version, extra=lang_extra), "Second Name"))
+        frags.append(_rec(_attr(person_uid, PROP_COMMON_NAME, _str("new_value", cn), rid("rid|cn"), version, extra=lang_extra), "Common Name"))
+
+        # scalar ints/dates
+        frags.append(_rec(_attr(person_uid, PROP_HEIGHT, _int("new_value", int(height)), rid("rid|h"), version, odvl=odvl0), "Height"))
+        frags.append(_rec(_attr(person_uid, PROP_DOB, _date("new_value", dob), rid("rid|dob"), version, odvl=odvl_date), "DOB"))
+
+        # city record
+        newv = (
+            '<record id="new_value">\n'
+            + f'\t\t\t\t{_large("city", city_large)}\n'
+            + f'\t\t\t\t{_int("DBID", city_dbid)}\n'
+            + '\t\t\t</record>'
         )
+        frags.append(_rec(_attr(person_uid, CITY_PROPERTY, newv, rid("rid|city"), version, odvl=_null("odvl")), "City of birth"))
 
-    out_f.write(XML_SUFFIX)
-    out_f.close()
+        # nation record (+ odvl record)
+        newv = (
+            '<record id="new_value">\n'
+            + f'\t\t\t\t{_large("Nnat", nation_large)}\n'
+            + f'\t\t\t\t{_int("DBID", nation_dbid)}\n'
+            + '\t\t\t</record>'
+        )
+        odvl = (
+            '<record id="odvl">\n'
+            + f'\t\t\t\t{_large("Nnat", DEFAULT_NNAT_ODVL)}\n'
+            + '\t\t\t</record>'
+        )
+        frags.append(_rec(_attr(person_uid, NATION_PROPERTY, newv, rid("rid|nation"), version, odvl=odvl), "Nation"))
 
-    if manifest_fp is not None:
-        manifest_fp.close()
+        # nationality info
+        frags.append(_rec(_attr(person_uid, PROP_NATIONALITY_INFO, _int("new_value", int(nationality_info_value)), rid("rid|ninfo"), version, odvl=odvl0), "Nationality Info"))
 
-    if len(outputs) == 1:
-        print(f"Wrote {args.count} players to {outputs[0]}")
+        # club record
+        newv = (
+            '<record id="new_value">\n'
+            + f'\t\t\t\t{_large("Ttea", club_large)}\n'
+            + f'\t\t\t\t{_int("DBID", club_dbid)}\n'
+            + '\t\t\t</record>'
+        )
+        frags.append(_rec(_attr(person_uid, CLUB_PROPERTY, newv, rid("rid|club"), version, odvl=_null("odvl")), "Club"))
+
+        # other ints/dates
+        frags.append(_rec(_attr(person_uid, PROP_WAGE, _int("new_value", wage), rid("rid|wage"), version, odvl=odvl0), "Wage"))
+        frags.append(_rec(_attr(person_uid, PROP_DATE_MOVED_TO_NATION, _date("new_value", dob), rid("rid|moved"), version, odvl=odvl_date), "Moved to nation"))
+        frags.append(_rec(_attr(person_uid, PROP_DATE_JOINED_CLUB, _date("new_value", joined), rid("rid|joined"), version, odvl=odvl_date), "Joined club"))
+        frags.append(_rec(_attr(person_uid, PROP_DATE_LAST_SIGNED, _date("new_value", joined), rid("rid|signed"), version, odvl=odvl_date), "Last signed"))
+        frags.append(_rec(_attr(person_uid, PROP_CONTRACT_EXPIRES, _date("new_value", expires), rid("rid|expires"), version, odvl=odvl_date), "Contract expires"))
+        frags.append(_rec(_attr(person_uid, PROP_SQUAD_STATUS, _int("new_value", 9), rid("rid|squad"), version, odvl=_null("odvl")), "Squad status"))
+        frags.append(_rec(_attr(person_uid, PROP_CA, _int("new_value", ca), rid("rid|ca"), version, odvl=odvl0), "CA"))
+        frags.append(_rec(_attr(person_uid, PROP_PA, _int("new_value", pa), rid("rid|pa"), version, odvl=odvl0), "PA"))
+        frags.append(_rec(_attr(person_uid, PROP_CURRENT_REP, _int("new_value", rep), rid("rid|rep"), version, odvl=odvl0), "Current rep"))
+        frags.append(_rec(_attr(person_uid, PROP_HOME_REP, _int("new_value", rep), rid("rid|rep_home"), version, odvl=odvl0), "Home rep"))
+        frags.append(_rec(_attr(person_uid, PROP_WORLD_REP, _int("new_value", rep), rid("rid|rep_world"), version, odvl=odvl0), "World rep"))
+        frags.append(_rec(_attr(person_uid, PROP_LEFT_FOOT, _str("new_value", str(left)), rid("rid|lf"), version, odvl=odvl0), "Left foot"))
+        frags.append(_rec(_attr(person_uid, PROP_RIGHT_FOOT, _str("new_value", str(right)), rid("rid|rf"), version, odvl=odvl0), "Right foot"))
+        frags.append(_rec(_attr(person_uid, PROP_TRANSFER_VALUE, _int("new_value", tv), rid("rid|tv"), version, odvl=odvl0), "Transfer value"))
+
+        # positions
+        for code in ALL_POS:
+            v = pos_map.get(code, 1)
+            frags.append(_rec(_attr(person_uid, POS_PROPS[code], _int("new_value", v), rid(f"rid|pos|{code}"), version), code))
+
+    frag = "".join(frags)
+
+    if append and os.path.exists(out_xml):
+        tmp = out_xml + ".tmp"
+        _append(out_xml, frag, tmp)
+        os.replace(tmp, out_xml)
     else:
-        print(f"Wrote {args.count} players split across {len(outputs)} files:")
-        for p in outputs:
-            print(f"  - {p}")
+        with open(out_xml, "w", encoding="utf-8", newline="\n") as f:
+            f.write("<record>\n\t<list id=\"verf\"/>\n\t<list id=\"db_changes\">\n")
+            f.write(frag)
+            f.write("\t</list>\n")
+            f.write(f'\t<integer id="EDvb" value="{DEFAULT_EDVB}"/>\n\t<string id="EDfb" value=""/>\n')
+            f.write(f'\t<integer id="version" value="{version}"/>\n\t<integer id="rule_group_version" value="{DEFAULT_RULE_GROUP_VERSION}"/>\n')
+            f.write('\t<boolean id="beta" value="false"/>\n')
+            f.write(f'\t<string id="orvs" value="{DEFAULT_ORVS}"/>\n\t<string id="svvs" value="{DEFAULT_SVVS}"/>\n</record>\n')
 
+def main(argv: Optional[List[str]] = None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--master_library", "--library", dest="library_csv", required=True)
+    ap.add_argument("--count", type=int, required=True)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--append", action="store_true")
+    ap.add_argument("--start_index", type=int, default=0)
+    ap.add_argument("--age_min", type=int, default=14)
+    ap.add_argument("--age_max", type=int, default=16)
+    ap.add_argument("--ca_min", type=int, default=20)
+    ap.add_argument("--ca_max", type=int, default=160)
+    ap.add_argument("--pa_min", type=int, default=80)
+    ap.add_argument("--pa_max", type=int, default=200)
+    ap.add_argument("--base_year", type=int, default=2026)
+    ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--version", type=int, default=DEFAULT_VERSION)
+    ap.add_argument("--dob", default="")
+    ap.add_argument("--height", type=int, default=0)
+    ap.add_argument("--club_dbid", type=int, default=0)
+    ap.add_argument("--club_large", type=int, default=0)
+    ap.add_argument("--city_dbid", type=int, default=0)
+    ap.add_argument("--city_large", type=int, default=0)
+    ap.add_argument("--nation_dbid", type=int, default=0)
+    ap.add_argument("--nation_large", type=int, default=0)
+    ap.add_argument("--positions", default="")
+    ap.add_argument("--nationality_info_value", type=int, default=85)
+    ap.add_argument("--first_names", default="scottish_male_first_names_2500.csv")
+    ap.add_argument("--surnames", default="scottish_surnames_2500.csv")
+    args = ap.parse_args(argv)
+
+    if args.pa_min > 200 or args.pa_max > 200:
+        print("[FAIL] PA must be within 0..200 (you passed >200).", file=sys.stderr)
+        return 2
+    if args.ca_min > 200 or args.ca_max > 200:
+        print("[FAIL] CA must be within 0..200.", file=sys.stderr)
+        return 2
+
+    fixed_dob = _parse_ymd(args.dob) if args.dob else None
+    fixed_height = args.height if args.height else None
+    fixed_club = (args.club_dbid, args.club_large) if (args.club_dbid and args.club_large) else None
+    fixed_city = (args.city_dbid, args.city_large) if (args.city_dbid and args.city_large) else None
+    fixed_nation = (args.nation_dbid, args.nation_large) if (args.nation_dbid and args.nation_large) else None
+
+    fixed_positions = None
+    if args.positions:
+        pos = [p.strip().upper() for p in args.positions.split(",") if p.strip()]
+        if len(pos) == 1 and pos[0] == "RANDOM":
+            fixed_positions = []
+        else:
+            for p in pos:
+                if p not in POS_PROPS:
+                    print(f"[FAIL] Unknown position: {p}. Allowed: {', '.join(ALL_POS)} or random", file=sys.stderr)
+                    return 2
+            fixed_positions = pos
+
+    try:
+        generate_players_xml(
+            library_csv=args.library_csv,
+            out_xml=args.output,
+            count=args.count,
+            seed=args.seed,
+            append=args.append,
+            start_index=args.start_index,
+            age_min=args.age_min,
+            age_max=args.age_max,
+            ca_min=args.ca_min,
+            ca_max=args.ca_max,
+            pa_min=args.pa_min,
+            pa_max=args.pa_max,
+            base_year=args.base_year,
+            version=args.version,
+            first_names_csv=args.first_names,
+            surnames_csv=args.surnames,
+            fixed_dob=fixed_dob,
+            fixed_height=fixed_height,
+            fixed_club=fixed_club,
+            fixed_city=fixed_city,
+            fixed_nation=fixed_nation,
+            fixed_positions=fixed_positions,
+            nationality_info_value=args.nationality_info_value,
+        )
+    except Exception as e:
+        print(f"[FAIL] {e}", file=sys.stderr)
+        return 1
+
+    print(f"[OK] Wrote: {args.output} (count={args.count}, append={args.append})")
     return 0
-
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
