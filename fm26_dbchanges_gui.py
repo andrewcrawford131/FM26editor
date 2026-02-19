@@ -33,7 +33,7 @@ except Exception:
     DateEntry = None  # type: ignore
     HAVE_TKCALENDAR = False
 
-APP_TITLE = "FM26 DBChanges Tools (Library Extractor + Players Generator)"
+APP_TITLE = "FM26 DBChanges Tools (Library Extractor + Players Generator) — Friendly v11"
 
 DEFAULT_EXTRACT_SCRIPT = "fm_dbchanges_extract_fixed_v4.py"
 DEFAULT_GENERATE_SCRIPT = "fm26_bulk_youth_generator.py"
@@ -107,6 +107,22 @@ class App(tk.Tk):
         self.geometry("1060x720")
         self.minsize(980, 620)
 
+        # Top bar toggles (friendlier UI)
+        topbar = ttk.Frame(self)
+        topbar.pack(fill="x", padx=10, pady=(10, 0))
+
+        self.btn_toggle_paths = ttk.Button(topbar, text="Show File Inputs", command=self._toggle_paths)
+        self.btn_toggle_paths.pack(side="left")
+
+        self.btn_toggle_output = ttk.Button(topbar, text="Show Output", command=self._toggle_output)
+        self.btn_toggle_output.pack(side="left", padx=(8, 0))
+
+        ttk.Label(topbar, text="(Clean view by default — reveal only when needed)").pack(side="left", padx=(12, 0))
+
+        self._paths_visible = False
+        self._output_visible = False
+
+
         self.base_dir = Path(__file__).resolve().parent
         self.fm_dir = detect_fm26_editor_data_dir()
 
@@ -144,7 +160,8 @@ class App(tk.Tk):
 
         # Bottom log area
         log_frame = ttk.Frame(self.paned)
-        self.paned.add(log_frame, weight=2)
+        self.log_frame = log_frame
+        # Output pane starts hidden; click 'Show Output' to reveal.
 
         ttk.Label(log_frame, text="Output / Errors (live):").pack(anchor="w")
 
@@ -185,6 +202,48 @@ class App(tk.Tk):
         self.after(0, _show)
 
 
+
+    def _toggle_output(self) -> None:
+        """Show/hide Output/Errors pane (hidden by default)."""
+        if getattr(self, "_output_visible", False):
+            try:
+                self.paned.forget(self.log_frame)
+            except Exception:
+                pass
+            self._output_visible = False
+            try:
+                self.btn_toggle_output.configure(text="Show Output")
+            except Exception:
+                pass
+        else:
+            try:
+                self.paned.add(self.log_frame, weight=2)
+            except Exception:
+                pass
+            self._output_visible = True
+            try:
+                self.btn_toggle_output.configure(text="Hide Output")
+            except Exception:
+                pass
+
+    def _toggle_paths(self) -> None:
+        """Show/hide the file path inputs (hidden by default)."""
+        target = not getattr(self, "_paths_visible", False)
+        for fr in (getattr(self, "batch_paths_frame", None), getattr(self, "single_paths_frame", None)):
+            if fr is None:
+                continue
+            try:
+                if target:
+                    fr.grid()
+                else:
+                    fr.grid_remove()
+            except Exception:
+                pass
+        self._paths_visible = target
+        try:
+            self.btn_toggle_paths.configure(text=("Hide File Inputs" if target else "Show File Inputs"))
+        except Exception:
+            pass
     def _make_scrollable(self, parent: ttk.Frame) -> ttk.Frame:
         """Return an inner frame inside a scrollable canvas placed in `parent`."""
         wrapper = ttk.Frame(parent)
@@ -378,14 +437,21 @@ class App(tk.Tk):
         self.batch_positions_random = tk.BooleanVar(value=True)
         self.batch_pos_vars: dict[str, tk.BooleanVar] = {p: tk.BooleanVar(value=False) for p in ALL_POS}
 
+
+        # File inputs (can be hidden via top bar)
+        paths = ttk.LabelFrame(frm, text="File inputs")
+        paths.grid(row=0, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        paths.columnconfigure(1, weight=1)
+        self.batch_paths_frame = paths
+        paths.grid_remove()
         def row_file(r, label, var, is_save=False):
-            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
-            ent = ttk.Entry(frm, textvariable=var)
+            ttk.Label(paths, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
+            ent = ttk.Entry(paths, textvariable=var)
             ent.grid(row=r, column=1, sticky="ew", padx=(0, 6), pady=6)
             if is_save:
-                btn = ttk.Button(frm, text="Browse…", command=lambda: self._pick_save_xml(var))
+                btn = ttk.Button(paths, text="Browse…", command=lambda: self._pick_save_xml(var))
             else:
-                btn = ttk.Button(frm, text="Browse…", command=lambda: self._pick_open_file(var))
+                btn = ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var))
             btn.grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
 
         row_file(0, "master_library.csv:", self.batch_clubs, is_save=False)
@@ -395,7 +461,7 @@ class App(tk.Tk):
         row_file(4, "Generator script:", self.batch_script, is_save=False)
 
         opt = ttk.LabelFrame(frm, text="Batch options")
-        opt.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
+        opt.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
         for c in range(6):
             opt.columnconfigure(c, weight=1)
 
@@ -434,7 +500,7 @@ class App(tk.Tk):
         ttk.Label(dob, text="End").grid(row=2, column=2, sticky="w", padx=8, pady=4)
         self._make_date_input(dob, self.batch_dob_end).grid(row=2, column=3, sticky="w", padx=8, pady=4)
 
-        ttk.Label(dob, text="(If DOB range is selected, Age min/max are ignored)", foreground="#444").grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 6))
+        ttk.Label(dob, text="(If DOB range is selected, Age min/max are ignored)", foreground="#444").grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 6))
 
         # Height + feet
         hf = ttk.LabelFrame(frm, text="Height + Feet")
@@ -471,14 +537,14 @@ class App(tk.Tk):
             ttk.Checkbutton(grid, text=code, variable=self.batch_pos_vars[code]).grid(row=r, column=c, sticky="w", padx=6, pady=2)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
+        btns.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
         ttk.Button(btns, text="Run Batch Generator", command=self._run_batch_generator).pack(anchor="w")
 
         hint = """Note:
     - FM editor import only accepts ONE XML at a time.
     - The generator produces ONE combined XML file.
     """
-        ttk.Label(frm, text=hint, foreground="#444").grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
+        ttk.Label(paths, text=hint, foreground="#444").grid(row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
 
     # ---------------- Players (Single) UI ----------------
     def _build_single_tab(self) -> None:
@@ -518,14 +584,21 @@ class App(tk.Tk):
         self.single_positions_random = tk.BooleanVar(value=True)
         self.single_pos_vars: dict[str, tk.BooleanVar] = {p: tk.BooleanVar(value=False) for p in ALL_POS}
 
+
+        # File inputs (can be hidden via top bar)
+        paths = ttk.LabelFrame(frm, text="File inputs")
+        paths.grid(row=0, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        paths.columnconfigure(1, weight=1)
+        self.single_paths_frame = paths
+        paths.grid_remove()
         def row_file(r, label, var, is_save=False):
-            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
-            ent = ttk.Entry(frm, textvariable=var)
+            ttk.Label(paths, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
+            ent = ttk.Entry(paths, textvariable=var)
             ent.grid(row=r, column=1, sticky="ew", padx=(0, 6), pady=6)
             if is_save:
-                btn = ttk.Button(frm, text="Browse…", command=lambda: self._pick_save_xml(var))
+                btn = ttk.Button(paths, text="Browse…", command=lambda: self._pick_save_xml(var))
             else:
-                btn = ttk.Button(frm, text="Browse…", command=lambda: self._pick_open_file(var))
+                btn = ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var))
             btn.grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
 
         row_file(0, "master_library.csv:", self.single_clubs, is_save=False)
@@ -535,7 +608,7 @@ class App(tk.Tk):
         row_file(4, "Generator script:", self.single_script, is_save=False)
 
         opt = ttk.LabelFrame(frm, text="Single player (fixed values)")
-        opt.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
+        opt.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
         for c in range(8):
             opt.columnconfigure(c, weight=1)
 
@@ -616,10 +689,10 @@ class App(tk.Tk):
             ttk.Checkbutton(grid, text=code, variable=self.single_pos_vars[code]).grid(row=r, column=c, sticky="w", padx=6, pady=2)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
+        btns.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
         ttk.Button(btns, text="Generate 1 Player", command=self._run_single_generator).pack(anchor="w")
 
-        ttk.Label(frm, text="Tip: Set Age=14 and/or pick a DOB in 2012 for a 14-year-old in base year 2026.", foreground="#444").grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
+        ttk.Label(paths, text="Tip: Set Age=14 and/or pick a DOB in 2012 for a 14-year-old in base year 2026.", foreground="#444").grid(row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
 
     def _pick_open_file(self, var: tk.StringVar) -> None:
         p = filedialog.askopenfilename(title="Select file", initialdir=str(self.fm_dir), filetypes=[("All files", "*.*")])
@@ -850,13 +923,14 @@ class App(tk.Tk):
     def _run_async_stream(self, title: str, cmd: list[str], must_create: str | None = None) -> None:
         self._log("\n" + "=" * 100)
         self._log(f"{title} command:\n  " + " ".join([_quote(x) for x in cmd]))
-        self._log(f"Working directory:\n  {Path.cwd()}\n")
+        self._log(f"Working directory:\n  {self.base_dir}\n")
 
         def worker():
             try:
                 # Stream stdout+stderr live into log
                 p = subprocess.Popen(
                     cmd,
+                    cwd=str(self.base_dir),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
