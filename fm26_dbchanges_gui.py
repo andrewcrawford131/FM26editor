@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+import csv
 import threading
 import subprocess
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ except Exception:
     DateEntry = None  # type: ignore
     HAVE_TKCALENDAR = False
 
-APP_TITLE = "FM26 DBChanges Tools (Library Extractor + Players Generator) — Friendly v11"
+APP_TITLE = "FM26 DBChanges Tools (Library Extractor + Players Generator) — Friendly v14"
 
 DEFAULT_EXTRACT_SCRIPT = "fm_dbchanges_extract_fixed_v4.py"
 DEFAULT_GENERATE_SCRIPT = "fm26_bulk_youth_generator.py"
@@ -154,9 +155,25 @@ class App(tk.Tk):
         self.players_notebook.add(self.batch_tab, text="Batch")
         self.players_notebook.add(self.single_tab, text="Single (1 Player)")
 
-        # Scrollable content frames (prevents Generate buttons from disappearing)
-        self.batch_body = self._make_scrollable(self.batch_tab)
-        self.single_body = self._make_scrollable(self.single_tab)
+        # Sticky action bars + scrollable content (buttons stay visible while you scroll)
+        self.batch_actionbar = ttk.Frame(self.batch_tab)
+        self.batch_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        ttk.Button(self.batch_actionbar, text="Run Batch Generator", command=self._run_batch_generator).pack(side="left")
+        ttk.Button(self.batch_actionbar, text="Show Output", command=self._toggle_output).pack(side="right")
+
+        batch_holder = ttk.Frame(self.batch_tab)
+        batch_holder.pack(side="top", fill="both", expand=True)
+        self.batch_body = self._make_scrollable(batch_holder)
+
+        self.single_actionbar = ttk.Frame(self.single_tab)
+        self.single_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        ttk.Button(self.single_actionbar, text="Generate 1 Player", command=self._run_single_generator).pack(side="left")
+        ttk.Button(self.single_actionbar, text="Show Output", command=self._toggle_output).pack(side="right")
+
+        single_holder = ttk.Frame(self.single_tab)
+        single_holder.pack(side="top", fill="both", expand=True)
+        self.single_body = self._make_scrollable(single_holder)
+
 
         # Bottom log area
         log_frame = ttk.Frame(self.paned)
@@ -184,6 +201,7 @@ class App(tk.Tk):
         self._build_extractor_tab()
         self._build_batch_tab()
         self._build_single_tab()
+        self.after(200, self._reload_master_library)
 
     def _log(self, msg: str) -> None:
         self.log.insert("end", msg)
@@ -244,6 +262,109 @@ class App(tk.Tk):
             self.btn_toggle_paths.configure(text=("Hide File Inputs" if target else "Show File Inputs"))
         except Exception:
             pass
+
+    # ---------------- Master library cache (clubs/cities/nations) ----------------
+
+    def _reload_master_library(self) -> None:
+        """Load clubs/cities/nations from master_library.csv and refresh the pickers."""
+        path = ""
+        if hasattr(self, "batch_clubs"):
+            path = self.batch_clubs.get().strip()
+        if not path and hasattr(self, "single_clubs"):
+            path = self.single_clubs.get().strip()
+
+        if not path or not Path(path).exists():
+            self._log("[WARN] master_library.csv not found — cannot populate club/city/nation pickers.\n")
+            return
+
+        clubs: list[str] = []
+        cities: list[str] = []
+        nations: list[str] = []
+        club_map: dict[str, tuple[str, str]] = {}
+        city_map: dict[str, tuple[str, str]] = {}
+        nation_map: dict[str, tuple[str, str]] = {}
+
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as f:
+                rdr = csv.DictReader(f)
+                for row in rdr:
+                    kind = (row.get("kind") or "").strip().lower()
+                    if kind == "club":
+                        dbid = (row.get("club_dbid") or "").strip()
+                        lg = (row.get("ttea_large") or "").strip()
+                        name = (row.get("club_name") or "").strip()
+                        if not dbid or not lg:
+                            continue
+                        label = f"{name} (DBID {dbid})" if name else f"Club DBID {dbid}"
+                        clubs.append(label)
+                        club_map[label] = (dbid, lg)
+                    elif kind == "city":
+                        dbid = (row.get("city_dbid") or "").strip()
+                        lg = (row.get("city_large") or "").strip()
+                        name = (row.get("city_name") or "").strip()
+                        if not dbid or not lg:
+                            continue
+                        label = f"{name} (DBID {dbid})" if name else f"City DBID {dbid}"
+                        cities.append(label)
+                        city_map[label] = (dbid, lg)
+                    elif kind == "nation":
+                        dbid = (row.get("nation_dbid") or "").strip()
+                        lg = (row.get("nnat_large") or "").strip()
+                        name = (row.get("nation_name") or "").strip()
+                        if not dbid or not lg:
+                            continue
+                        label = f"{name} (DBID {dbid})" if name else f"Nation DBID {dbid}"
+                        nations.append(label)
+                        nation_map[label] = (dbid, lg)
+        except Exception as e:
+            self._log("[ERROR] Failed to read master_library.csv for pickers: " + str(e) + "\n")
+            return
+
+        clubs.sort(key=lambda x: x.lower())
+        cities.sort(key=lambda x: x.lower())
+        nations.sort(key=lambda x: x.lower())
+
+        self._library_clubs = clubs
+        self._library_cities = cities
+        self._library_nations = nations
+        self._club_map = club_map
+        self._city_map = city_map
+        self._nation_map = nation_map
+
+        for attr, values in [
+            ("batch_club_combo", clubs),
+            ("batch_city_combo", cities),
+            ("batch_nation_combo", nations),
+            ("single_club_combo", clubs),
+            ("single_city_combo", cities),
+            ("single_nation_combo", nations),
+        ]:
+            cb = getattr(self, attr, None)
+            if cb is not None:
+                try:
+                    cb["values"] = values
+                except Exception:
+                    pass
+
+        self._log(f"[OK] Loaded library pickers: clubs={len(clubs)}, cities={len(cities)}, nations={len(nations)}\n")
+
+    def _combo_state_for_mode(self, mode_var: tk.StringVar, combo: ttk.Combobox) -> None:
+        try:
+            combo.configure(state=("readonly" if mode_var.get() == "fixed" else "disabled"))
+        except Exception:
+            pass
+
+    def _get_fixed_ids(self, kind: str, label: str) -> tuple[str, str] | None:
+        if not label:
+            return None
+        if kind == "club":
+            return getattr(self, "_club_map", {}).get(label)
+        if kind == "city":
+            return getattr(self, "_city_map", {}).get(label)
+        if kind == "nation":
+            return getattr(self, "_nation_map", {}).get(label)
+        return None
+
     def _make_scrollable(self, parent: ttk.Frame) -> ttk.Frame:
         """Return an inner frame inside a scrollable canvas placed in `parent`."""
         wrapper = ttk.Frame(parent)
@@ -482,6 +603,12 @@ class App(tk.Tk):
         opt_field(2, 2, "PA min", self.batch_pa_min)
         opt_field(2, 4, "PA max", self.batch_pa_max)
 
+        # Run button (kept near the top so it's easy to find)
+        btnrow = ttk.Frame(opt)
+        btnrow.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        ttk.Button(btnrow, text="Run Batch Generator", command=self._run_batch_generator).pack(anchor="w")
+
+
         # DOB options
         dob = ttk.LabelFrame(frm, text="DOB (Age range OR calendar range)")
         dob.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
@@ -524,8 +651,51 @@ class App(tk.Tk):
         ttk.Combobox(hf, textvariable=self.batch_feet_mode, values=["random", "right", "left", "both"], width=10, state="readonly").grid(row=2, column=1, sticky="w", padx=8, pady=6)
 
         # Positions
+
+        # Club / City / Nation selection (random or fixed)
+        sel = ttk.LabelFrame(frm, text="Club / City / Nation")
+        sel.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        sel.columnconfigure(3, weight=1)
+
+        self.batch_club_mode = tk.StringVar(value="random")
+        self.batch_city_mode = tk.StringVar(value="random")
+        self.batch_nation_mode = tk.StringVar(value="random")
+
+        self.batch_club_sel = tk.StringVar(value="")
+        self.batch_city_sel = tk.StringVar(value="")
+        self.batch_nation_sel = tk.StringVar(value="")
+
+        ttk.Label(sel, text="Club").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        club_combo = ttk.Combobox(sel, textvariable=self.batch_club_sel, values=[], state="disabled", width=55)
+        club_combo.grid(row=0, column=3, sticky="ew", padx=8, pady=6)
+        self.batch_club_combo = club_combo
+        ttk.Radiobutton(sel, text="Random", variable=self.batch_club_mode, value="random",
+                        command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_club_mode, value="fixed",
+                        command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Label(sel, text="City of birth").grid(row=1, column=0, sticky="w", padx=8, pady=6)
+        city_combo = ttk.Combobox(sel, textvariable=self.batch_city_sel, values=[], state="disabled", width=55)
+        city_combo.grid(row=1, column=3, sticky="ew", padx=8, pady=6)
+        self.batch_city_combo = city_combo
+        ttk.Radiobutton(sel, text="Random", variable=self.batch_city_mode, value="random",
+                        command=lambda mv=self.batch_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_city_mode, value="fixed",
+                        command=lambda mv=self.batch_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Label(sel, text="Nation").grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        nation_combo = ttk.Combobox(sel, textvariable=self.batch_nation_sel, values=[], state="disabled", width=55)
+        nation_combo.grid(row=2, column=3, sticky="ew", padx=8, pady=6)
+        self.batch_nation_combo = nation_combo
+        ttk.Radiobutton(sel, text="Random", variable=self.batch_nation_mode, value="random",
+                        command=lambda mv=self.batch_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_nation_mode, value="fixed",
+                        command=lambda mv=self.batch_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(4, 8))
+
         pos = ttk.LabelFrame(frm, text="Positions")
-        pos.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        pos.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.batch_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
 
         grid = ttk.Frame(pos)
@@ -535,10 +705,6 @@ class App(tk.Tk):
             r = i // cols
             c = i % cols
             ttk.Checkbutton(grid, text=code, variable=self.batch_pos_vars[code]).grid(row=r, column=c, sticky="w", padx=6, pady=2)
-
-        btns = ttk.Frame(frm)
-        btns.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
-        ttk.Button(btns, text="Run Batch Generator", command=self._run_batch_generator).pack(anchor="w")
 
         hint = """Note:
     - FM editor import only accepts ONE XML at a time.
@@ -624,6 +790,12 @@ class App(tk.Tk):
         ttk.Label(opt, text="PA").grid(row=0, column=6, sticky="w", padx=6, pady=6)
         ttk.Entry(opt, textvariable=self.single_pa, width=10).grid(row=0, column=7, sticky="w", padx=6, pady=6)
 
+        # Generate button (kept near the top so it's easy to find)
+        btnrow = ttk.Frame(opt)
+        btnrow.grid(row=1, column=0, columnspan=8, sticky="w", padx=6, pady=(0, 6))
+        ttk.Button(btnrow, text="Generate 1 Player", command=self._run_single_generator).pack(anchor="w")
+
+
         # Age / DOB
         dob = ttk.LabelFrame(frm, text="Age / DOB")
         dob.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
@@ -676,8 +848,51 @@ class App(tk.Tk):
         ttk.Combobox(hf, textvariable=self.single_feet_mode, values=["random", "right", "left", "both"], width=10, state="readonly").grid(row=2, column=1, sticky="w", padx=8, pady=6)
 
         # Positions
+
+        # Club / City / Nation selection (random or fixed)
+        sel = ttk.LabelFrame(frm, text="Club / City / Nation")
+        sel.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        sel.columnconfigure(3, weight=1)
+
+        self.single_club_mode = tk.StringVar(value="random")
+        self.single_city_mode = tk.StringVar(value="random")
+        self.single_nation_mode = tk.StringVar(value="random")
+
+        self.single_club_sel = tk.StringVar(value="")
+        self.single_city_sel = tk.StringVar(value="")
+        self.single_nation_sel = tk.StringVar(value="")
+
+        ttk.Label(sel, text="Club").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        club_combo = ttk.Combobox(sel, textvariable=self.single_club_sel, values=[], state="disabled", width=55)
+        club_combo.grid(row=0, column=3, sticky="ew", padx=8, pady=6)
+        self.single_club_combo = club_combo
+        ttk.Radiobutton(sel, text="Random", variable=self.single_club_mode, value="random",
+                        command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.single_club_mode, value="fixed",
+                        command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Label(sel, text="City of birth").grid(row=1, column=0, sticky="w", padx=8, pady=6)
+        city_combo = ttk.Combobox(sel, textvariable=self.single_city_sel, values=[], state="disabled", width=55)
+        city_combo.grid(row=1, column=3, sticky="ew", padx=8, pady=6)
+        self.single_city_combo = city_combo
+        ttk.Radiobutton(sel, text="Random", variable=self.single_city_mode, value="random",
+                        command=lambda mv=self.single_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.single_city_mode, value="fixed",
+                        command=lambda mv=self.single_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Label(sel, text="Nation").grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        nation_combo = ttk.Combobox(sel, textvariable=self.single_nation_sel, values=[], state="disabled", width=55)
+        nation_combo.grid(row=2, column=3, sticky="ew", padx=8, pady=6)
+        self.single_nation_combo = nation_combo
+        ttk.Radiobutton(sel, text="Random", variable=self.single_nation_mode, value="random",
+                        command=lambda mv=self.single_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.single_nation_mode, value="fixed",
+                        command=lambda mv=self.single_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(4, 8))
+
         pos = ttk.LabelFrame(frm, text="Positions")
-        pos.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        pos.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.single_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
 
         grid = ttk.Frame(pos)
@@ -687,10 +902,6 @@ class App(tk.Tk):
             r = i // cols
             c = i % cols
             ttk.Checkbutton(grid, text=code, variable=self.single_pos_vars[code]).grid(row=r, column=c, sticky="w", padx=6, pady=2)
-
-        btns = ttk.Frame(frm)
-        btns.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
-        ttk.Button(btns, text="Generate 1 Player", command=self._run_single_generator).pack(anchor="w")
 
         ttk.Label(paths, text="Tip: Set Age=14 and/or pick a DOB in 2012 for a 14-year-old in base year 2026.", foreground="#444").grid(row=6, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
 
@@ -747,6 +958,32 @@ class App(tk.Tk):
                 messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
                 return
             extra.extend(["--left_foot", lf, "--right_foot", rf])
+
+
+        # Club/City/Nation (optional fixed selections)
+        if getattr(self, "batch_club_mode", tk.StringVar(value="random")).get() == "fixed":
+            sel = getattr(self, "batch_club_sel", tk.StringVar(value="")).get().strip()
+            ids = self._get_fixed_ids("club", sel)
+            if not ids:
+                messagebox.showerror("Club missing", "Fixed Club is selected, but no club is chosen.")
+                return
+            extra.extend(["--club_dbid", ids[0], "--club_large", ids[1]])
+
+        if getattr(self, "batch_city_mode", tk.StringVar(value="random")).get() == "fixed":
+            sel = getattr(self, "batch_city_sel", tk.StringVar(value="")).get().strip()
+            ids = self._get_fixed_ids("city", sel)
+            if not ids:
+                messagebox.showerror("City missing", "Fixed City is selected, but no city is chosen.")
+                return
+            extra.extend(["--city_dbid", ids[0], "--city_large", ids[1]])
+
+        if getattr(self, "batch_nation_mode", tk.StringVar(value="random")).get() == "fixed":
+            sel = getattr(self, "batch_nation_sel", tk.StringVar(value="")).get().strip()
+            ids = self._get_fixed_ids("nation", sel)
+            if not ids:
+                messagebox.showerror("Nation missing", "Fixed Nation is selected, but no nation is chosen.")
+                return
+            extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
 
         # Positions
         if self.batch_positions_random.get():
@@ -820,6 +1057,32 @@ class App(tk.Tk):
                 messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
                 return
             extra.extend(["--left_foot", lf, "--right_foot", rf])
+
+
+        # Club/City/Nation (optional fixed selections)
+        if getattr(self, "single_club_mode", tk.StringVar(value="random")).get() == "fixed":
+            sel = getattr(self, "single_club_sel", tk.StringVar(value="")).get().strip()
+            ids = self._get_fixed_ids("club", sel)
+            if not ids:
+                messagebox.showerror("Club missing", "Fixed Club is selected, but no club is chosen.")
+                return
+            extra.extend(["--club_dbid", ids[0], "--club_large", ids[1]])
+
+        if getattr(self, "single_city_mode", tk.StringVar(value="random")).get() == "fixed":
+            sel = getattr(self, "single_city_sel", tk.StringVar(value="")).get().strip()
+            ids = self._get_fixed_ids("city", sel)
+            if not ids:
+                messagebox.showerror("City missing", "Fixed City is selected, but no city is chosen.")
+                return
+            extra.extend(["--city_dbid", ids[0], "--city_large", ids[1]])
+
+        if getattr(self, "single_nation_mode", tk.StringVar(value="random")).get() == "fixed":
+            sel = getattr(self, "single_nation_sel", tk.StringVar(value="")).get().strip()
+            ids = self._get_fixed_ids("nation", sel)
+            if not ids:
+                messagebox.showerror("Nation missing", "Fixed Nation is selected, but no nation is chosen.")
+                return
+            extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
 
         # Positions
         if self.single_positions_random.get():
