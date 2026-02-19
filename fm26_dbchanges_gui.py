@@ -24,10 +24,23 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+
+try:
+    # Optional: nice calendar picker (pip install tkcalendar)
+    from tkcalendar import DateEntry  # type: ignore
+    HAVE_TKCALENDAR = True
+except Exception:
+    DateEntry = None  # type: ignore
+    HAVE_TKCALENDAR = False
+
 APP_TITLE = "FM26 DBChanges Tools (Library Extractor + Players Generator)"
 
 DEFAULT_EXTRACT_SCRIPT = "fm_dbchanges_extract_fixed_v4.py"
 DEFAULT_GENERATE_SCRIPT = "fm26_bulk_youth_generator.py"
+
+# Positions list must match the generator's internal POS map.
+ALL_POS = ["GK","DL","DC","DR","WBL","WBR","DM","ML","MC","MR","AML","AMC","AMR","ST"]
+
 
 
 def _quote(s: str) -> str:
@@ -125,6 +138,10 @@ class App(tk.Tk):
         self.players_notebook.add(self.batch_tab, text="Batch")
         self.players_notebook.add(self.single_tab, text="Single (1 Player)")
 
+        # Scrollable content frames (prevents Generate buttons from disappearing)
+        self.batch_body = self._make_scrollable(self.batch_tab)
+        self.single_body = self._make_scrollable(self.single_tab)
+
         # Bottom log area
         log_frame = ttk.Frame(self.paned)
         self.paned.add(log_frame, weight=2)
@@ -166,6 +183,70 @@ class App(tk.Tk):
             self._log(f"[ERROR] {title}: {message}")
             messagebox.showerror(title, message)
         self.after(0, _show)
+
+
+    def _make_scrollable(self, parent: ttk.Frame) -> ttk.Frame:
+        """Return an inner frame inside a scrollable canvas placed in `parent`."""
+        wrapper = ttk.Frame(parent)
+        wrapper.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(wrapper, highlightthickness=0)
+        vsb = ttk.Scrollbar(wrapper, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = ttk.Frame(canvas)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_inner_config(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_config(event):
+            canvas.itemconfig(win, width=event.width)
+
+        inner.bind("<Configure>", _on_inner_config)
+        canvas.bind("<Configure>", _on_canvas_config)
+
+        # Mouse wheel support while pointer is over the scroll area
+        def _on_mousewheel(event):
+            try:
+                if sys.platform.startswith("darwin"):
+                    canvas.yview_scroll(int(-event.delta), "units")
+                else:
+                    delta = int(event.delta / 120) if event.delta else 0
+                    if delta:
+                        canvas.yview_scroll(-delta, "units")
+            except Exception:
+                pass
+
+        def _bind(_event=None):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"))
+            canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(3, "units"))
+
+        def _unbind(_event=None):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        inner.bind("<Enter>", _bind)
+        inner.bind("<Leave>", _unbind)
+        canvas.bind("<Enter>", _bind)
+        canvas.bind("<Leave>", _unbind)
+
+        return inner
+
+    def _make_date_input(self, parent, var: tk.StringVar):
+            """Calendar-like date input (YYYY-MM-DD). Uses tkcalendar if installed, else a plain Entry."""
+            if HAVE_TKCALENDAR and DateEntry is not None:
+                try:
+                    w = DateEntry(parent, textvariable=var, date_pattern="y-mm-dd", width=12)
+                    return w
+                except Exception:
+                    pass
+            return ttk.Entry(parent, textvariable=var, width=14)
 
     # ---------------- Extractor UI ----------------
     def _build_extractor_tab(self) -> None:
@@ -252,7 +333,7 @@ class App(tk.Tk):
 
     # ---------------- Players (Batch) UI ----------------
     def _build_batch_tab(self) -> None:
-        frm = self.batch_tab
+        frm = self.batch_body
         frm.columnconfigure(1, weight=1)
 
         # Defaults: output to FM editor data folder
@@ -262,15 +343,40 @@ class App(tk.Tk):
         self.batch_out = tk.StringVar(value=str(self.fm_dir / "fm26_players.xml"))
         self.batch_script = tk.StringVar(value=str(self.base_dir / DEFAULT_GENERATE_SCRIPT))
 
+        # Core batch settings
         self.batch_count = tk.StringVar(value="1000")
         self.batch_seed = tk.StringVar(value="123")
+        self.batch_base_year = tk.StringVar(value="2026")
+
+        # Age / CA / PA (used when DOB range not set)
         self.batch_age_min = tk.StringVar(value="14")
         self.batch_age_max = tk.StringVar(value="16")
         self.batch_ca_min = tk.StringVar(value="20")
         self.batch_ca_max = tk.StringVar(value="160")
         self.batch_pa_min = tk.StringVar(value="80")
         self.batch_pa_max = tk.StringVar(value="200")
-        self.batch_base_year = tk.StringVar(value="2026")
+
+        # DOB mode (age range OR DOB range OR fixed DOB)
+        self.batch_dob_mode = tk.StringVar(value="age")  # age|range|fixed
+        self.batch_dob_fixed = tk.StringVar(value="2012-07-01")
+        self.batch_dob_start = tk.StringVar(value="2010-01-01")
+        self.batch_dob_end = tk.StringVar(value="2012-12-31")
+
+        # Height mode (random range OR fixed)
+        self.batch_height_mode = tk.StringVar(value="range")  # range|fixed
+        self.batch_height_min = tk.StringVar(value="150")
+        self.batch_height_max = tk.StringVar(value="210")
+        self.batch_height_fixed = tk.StringVar(value="")
+
+        # Feet
+        self.batch_feet_mode = tk.StringVar(value="random")  # random|right|left|both
+        self.batch_feet_override = tk.BooleanVar(value=False)
+        self.batch_left_foot = tk.StringVar(value="")
+        self.batch_right_foot = tk.StringVar(value="")
+
+        # Positions
+        self.batch_positions_random = tk.BooleanVar(value=True)
+        self.batch_pos_vars: dict[str, tk.BooleanVar] = {p: tk.BooleanVar(value=False) for p in ALL_POS}
 
         def row_file(r, label, var, is_save=False):
             ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
@@ -310,20 +416,73 @@ class App(tk.Tk):
         opt_field(2, 2, "PA min", self.batch_pa_min)
         opt_field(2, 4, "PA max", self.batch_pa_max)
 
+        # DOB options
+        dob = ttk.LabelFrame(frm, text="DOB (Age range OR calendar range)")
+        dob.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        dob.columnconfigure(3, weight=1)
+
+        ttk.Radiobutton(dob, text="Use age range", variable=self.batch_dob_mode, value="age").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(dob, text="Use DOB range", variable=self.batch_dob_mode, value="range").grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(dob, text="Use fixed DOB (same for all)", variable=self.batch_dob_mode, value="fixed").grid(row=0, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Label(dob, text="Fixed DOB").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        self._make_date_input(dob, self.batch_dob_fixed).grid(row=1, column=1, sticky="w", padx=8, pady=4)
+
+        ttk.Label(dob, text="Start").grid(row=2, column=0, sticky="w", padx=8, pady=4)
+        self._make_date_input(dob, self.batch_dob_start).grid(row=2, column=1, sticky="w", padx=8, pady=4)
+
+        ttk.Label(dob, text="End").grid(row=2, column=2, sticky="w", padx=8, pady=4)
+        self._make_date_input(dob, self.batch_dob_end).grid(row=2, column=3, sticky="w", padx=8, pady=4)
+
+        ttk.Label(dob, text="(If DOB range is selected, Age min/max are ignored)", foreground="#444").grid(row=2, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 6))
+
+        # Height + feet
+        hf = ttk.LabelFrame(frm, text="Height + Feet")
+        hf.grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        for c in range(8):
+            hf.columnconfigure(c, weight=1)
+
+        ttk.Radiobutton(hf, text="Random height range", variable=self.batch_height_mode, value="range").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(hf, text="Fixed height", variable=self.batch_height_mode, value="fixed").grid(row=0, column=4, sticky="w", padx=8, pady=6)
+
+        ttk.Label(hf, text="Min").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(hf, textvariable=self.batch_height_min, width=6).grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        ttk.Label(hf, text="Max").grid(row=1, column=2, sticky="w", padx=8, pady=4)
+        ttk.Entry(hf, textvariable=self.batch_height_max, width=6).grid(row=1, column=3, sticky="w", padx=8, pady=4)
+
+        ttk.Label(hf, text="Height").grid(row=1, column=4, sticky="w", padx=8, pady=4)
+        ttk.Entry(hf, textvariable=self.batch_height_fixed, width=6).grid(row=1, column=5, sticky="w", padx=8, pady=4)
+        ttk.Label(hf, text="cm (150–210)", foreground="#444").grid(row=1, column=6, sticky="w", padx=8, pady=4)
+
+        ttk.Label(hf, text="Feet").grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        ttk.Combobox(hf, textvariable=self.batch_feet_mode, values=["random", "right", "left", "both"], width=10, state="readonly").grid(row=2, column=1, sticky="w", padx=8, pady=6)
+
+        # Positions
+        pos = ttk.LabelFrame(frm, text="Positions")
+        pos.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.batch_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+
+        grid = ttk.Frame(pos)
+        grid.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+        cols = 7
+        for i, code in enumerate(ALL_POS):
+            r = i // cols
+            c = i % cols
+            ttk.Checkbutton(grid, text=code, variable=self.batch_pos_vars[code]).grid(row=r, column=c, sticky="w", padx=6, pady=2)
+
         btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
+        btns.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
         ttk.Button(btns, text="Run Batch Generator", command=self._run_batch_generator).pack(anchor="w")
 
-        hint = (
-            "Note:\n"
-            "- FM editor import only accepts ONE XML at a time.\n"
-            "- The generator produces ONE combined XML file.\n"
-        )
-        ttk.Label(frm, text=hint, foreground="#444").grid(row=7, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
+        hint = """Note:
+    - FM editor import only accepts ONE XML at a time.
+    - The generator produces ONE combined XML file.
+    """
+        ttk.Label(frm, text=hint, foreground="#444").grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
 
     # ---------------- Players (Single) UI ----------------
     def _build_single_tab(self) -> None:
-        frm = self.single_tab
+        frm = self.single_body
         frm.columnconfigure(1, weight=1)
 
         # Single = same inputs but count forced to 1
@@ -334,10 +493,30 @@ class App(tk.Tk):
         self.single_script = tk.StringVar(value=str(self.base_dir / DEFAULT_GENERATE_SCRIPT))
 
         self.single_seed = tk.StringVar(value="123")
+        self.single_base_year = tk.StringVar(value="2026")
+
+        # Age/DOB
+        self.single_dob_mode = tk.StringVar(value="age")  # age|dob
         self.single_age = tk.StringVar(value="14")
+        self.single_dob = tk.StringVar(value="2012-07-01")
+        self.single_age_preview = tk.StringVar(value="Age (from DOB): 14")
+
+        # CA/PA fixed
         self.single_ca = tk.StringVar(value="120")
         self.single_pa = tk.StringVar(value="170")
-        self.single_base_year = tk.StringVar(value="2026")
+
+        # Height
+        self.single_height_mode = tk.StringVar(value="range")  # range|fixed
+        self.single_height_min = tk.StringVar(value="150")
+        self.single_height_max = tk.StringVar(value="210")
+        self.single_height_fixed = tk.StringVar(value="")
+
+        # Feet
+        self.single_feet_mode = tk.StringVar(value="random")
+
+        # Positions
+        self.single_positions_random = tk.BooleanVar(value=True)
+        self.single_pos_vars: dict[str, tk.BooleanVar] = {p: tk.BooleanVar(value=False) for p in ALL_POS}
 
         def row_file(r, label, var, is_save=False):
             ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
@@ -357,30 +536,90 @@ class App(tk.Tk):
 
         opt = ttk.LabelFrame(frm, text="Single player (fixed values)")
         opt.grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
-        for c in range(6):
+        for c in range(8):
             opt.columnconfigure(c, weight=1)
 
-        def opt_field(r, c, label, var, width=10):
-            ttk.Label(opt, text=label).grid(row=r, column=c, sticky="w", padx=6, pady=6)
-            e = ttk.Entry(opt, textvariable=var, width=width)
-            e.grid(row=r, column=c + 1, sticky="w", padx=6, pady=6)
+        ttk.Label(opt, text="Seed").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(opt, textvariable=self.single_seed, width=10).grid(row=0, column=1, sticky="w", padx=6, pady=6)
 
-        opt_field(0, 0, "Seed", self.single_seed)
-        opt_field(0, 2, "Base year", self.single_base_year)
+        ttk.Label(opt, text="Base year").grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(opt, textvariable=self.single_base_year, width=10).grid(row=0, column=3, sticky="w", padx=6, pady=6)
 
-        opt_field(1, 0, "Age", self.single_age)
-        opt_field(1, 2, "CA", self.single_ca)
-        opt_field(1, 4, "PA", self.single_pa)
+        ttk.Label(opt, text="CA").grid(row=0, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(opt, textvariable=self.single_ca, width=10).grid(row=0, column=5, sticky="w", padx=6, pady=6)
+
+        ttk.Label(opt, text="PA").grid(row=0, column=6, sticky="w", padx=6, pady=6)
+        ttk.Entry(opt, textvariable=self.single_pa, width=10).grid(row=0, column=7, sticky="w", padx=6, pady=6)
+
+        # Age / DOB
+        dob = ttk.LabelFrame(frm, text="Age / DOB")
+        dob.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        dob.columnconfigure(3, weight=1)
+
+        ttk.Radiobutton(dob, text="Use age", variable=self.single_dob_mode, value="age").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(dob, text="Age").grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Entry(dob, textvariable=self.single_age, width=6).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+
+        ttk.Radiobutton(dob, text="Use DOB", variable=self.single_dob_mode, value="dob").grid(row=1, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(dob, text="DOB").grid(row=1, column=1, sticky="w", padx=8, pady=6)
+        dob_w = self._make_date_input(dob, self.single_dob)
+        dob_w.grid(row=1, column=2, sticky="w", padx=8, pady=6)
+        ttk.Label(dob, textvariable=self.single_age_preview, foreground="#444").grid(row=1, column=3, sticky="w", padx=8, pady=6)
+
+        def _update_age_preview(*_):
+            try:
+                # Age at base_year (approx, just year-based)
+                by = int(self.single_base_year.get().strip() or "2026")
+                y = int(self.single_dob.get().strip()[:4])
+                a = max(0, by - y)
+                self.single_age_preview.set(f"Age (from DOB): {a}")
+            except Exception:
+                self.single_age_preview.set("Age (from DOB): ?")
+
+        # try to update on changes
+        self.single_dob.trace_add("write", _update_age_preview)
+        self.single_base_year.trace_add("write", _update_age_preview)
+        _update_age_preview()
+
+        # Height + feet
+        hf = ttk.LabelFrame(frm, text="Height + Feet")
+        hf.grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        for c in range(8):
+            hf.columnconfigure(c, weight=1)
+
+        ttk.Radiobutton(hf, text="Random height range", variable=self.single_height_mode, value="range").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(hf, text="Fixed height", variable=self.single_height_mode, value="fixed").grid(row=0, column=4, sticky="w", padx=8, pady=6)
+
+        ttk.Label(hf, text="Min").grid(row=1, column=0, sticky="w", padx=8, pady=4)
+        ttk.Entry(hf, textvariable=self.single_height_min, width=6).grid(row=1, column=1, sticky="w", padx=8, pady=4)
+        ttk.Label(hf, text="Max").grid(row=1, column=2, sticky="w", padx=8, pady=4)
+        ttk.Entry(hf, textvariable=self.single_height_max, width=6).grid(row=1, column=3, sticky="w", padx=8, pady=4)
+
+        ttk.Label(hf, text="Height").grid(row=1, column=4, sticky="w", padx=8, pady=4)
+        ttk.Entry(hf, textvariable=self.single_height_fixed, width=6).grid(row=1, column=5, sticky="w", padx=8, pady=4)
+        ttk.Label(hf, text="cm (150–210)", foreground="#444").grid(row=1, column=6, sticky="w", padx=8, pady=4)
+
+        ttk.Label(hf, text="Feet").grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        ttk.Combobox(hf, textvariable=self.single_feet_mode, values=["random", "right", "left", "both"], width=10, state="readonly").grid(row=2, column=1, sticky="w", padx=8, pady=6)
+
+        # Positions
+        pos = ttk.LabelFrame(frm, text="Positions")
+        pos.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.single_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+
+        grid = ttk.Frame(pos)
+        grid.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+        cols = 7
+        for i, code in enumerate(ALL_POS):
+            r = i // cols
+            c = i % cols
+            ttk.Checkbutton(grid, text=code, variable=self.single_pos_vars[code]).grid(row=r, column=c, sticky="w", padx=6, pady=2)
 
         btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
+        btns.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(6, 6))
         ttk.Button(btns, text="Generate 1 Player", command=self._run_single_generator).pack(anchor="w")
 
-        ttk.Label(
-            frm,
-            text="(Next step later: height, calendar DOB picker, nation/city selector, positions etc.)",
-            foreground="#444"
-        ).grid(row=7, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
+        ttk.Label(frm, text="Tip: Set Age=14 and/or pick a DOB in 2012 for a 14-year-old in base year 2026.", foreground="#444").grid(row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 8))
 
     def _pick_open_file(self, var: tk.StringVar) -> None:
         p = filedialog.askopenfilename(title="Select file", initialdir=str(self.fm_dir), filetypes=[("All files", "*.*")])
@@ -398,6 +637,54 @@ class App(tk.Tk):
             var.set(p)
 
     def _run_batch_generator(self) -> None:
+        extra: list[str] = []
+
+        # DOB
+        mode = getattr(self, "batch_dob_mode", tk.StringVar(value="age")).get()
+        if mode == "fixed":
+            d = self.batch_dob_fixed.get().strip()
+            if not d:
+                messagebox.showerror("Fixed DOB missing", "Fixed DOB is selected, but the date is blank.")
+                return
+            extra.extend(["--dob", d])
+        elif mode == "range":
+            ds = self.batch_dob_start.get().strip()
+            de = self.batch_dob_end.get().strip()
+            if not ds or not de:
+                messagebox.showerror("DOB range missing", "Please set both DOB Start and DOB End (YYYY-MM-DD).")
+                return
+            extra.extend(["--dob_start", ds, "--dob_end", de])
+
+        # Height
+        if getattr(self, "batch_height_mode", tk.StringVar(value="range")).get() == "fixed":
+            h = self.batch_height_fixed.get().strip()
+            if not h:
+                messagebox.showerror("Height missing", "Fixed height selected, but Height is blank.")
+                return
+            extra.extend(["--height", h])
+        else:
+            extra.extend(["--height_min", self.batch_height_min.get().strip(), "--height_max", self.batch_height_max.get().strip()])
+
+        # Feet
+        extra.extend(["--feet", self.batch_feet_mode.get().strip() or "random"])
+        if getattr(self, "batch_feet_override", tk.BooleanVar(value=False)).get():
+            lf = self.batch_left_foot.get().strip()
+            rf = self.batch_right_foot.get().strip()
+            if not lf or not rf:
+                messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
+                return
+            extra.extend(["--left_foot", lf, "--right_foot", rf])
+
+        # Positions
+        if self.batch_positions_random.get():
+            extra.extend(["--positions", "RANDOM"])
+        else:
+            sel = [code for code, v in self.batch_pos_vars.items() if v.get()]
+            if not sel:
+                messagebox.showerror("Positions missing", "Please select at least one position, or tick Random positions.")
+                return
+            extra.extend(["--positions", ",".join(sel)])
+
         self._run_generator_common(
             script_path=self.batch_script.get().strip(),
             clubs=self.batch_clubs.get().strip(),
@@ -414,13 +701,62 @@ class App(tk.Tk):
             base_year=self.batch_base_year.get().strip(),
             seed=self.batch_seed.get().strip(),
             title="Batch Generator",
+            extra_args=extra,
         )
 
     def _run_single_generator(self) -> None:
-        # Single: count=1, min=max for age/CA/PA
-        age = self.single_age.get().strip()
+        # Single: count=1, min=max for CA/PA, and either Age or DOB fixed
         ca = self.single_ca.get().strip()
         pa = self.single_pa.get().strip()
+        base_year = self.single_base_year.get().strip()
+
+        extra: list[str] = []
+
+        # Age / DOB
+        age = self.single_age.get().strip()
+        if self.single_dob_mode.get() == "dob":
+            dob = self.single_dob.get().strip()
+            if not dob:
+                messagebox.showerror("DOB missing", "Use DOB is selected, but DOB is blank.")
+                return
+            extra.extend(["--dob", dob])
+            # (age_min/max are ignored when --dob is fixed, but we keep age for sanity)
+            try:
+                by = int(base_year or "2026")
+                a = max(0, by - int(dob[:4]))
+                age = str(a)
+            except Exception:
+                pass
+
+        # Height
+        if self.single_height_mode.get() == "fixed":
+            h = self.single_height_fixed.get().strip()
+            if not h:
+                messagebox.showerror("Height missing", "Fixed height selected, but Height is blank.")
+                return
+            extra.extend(["--height", h])
+        else:
+            extra.extend(["--height_min", self.single_height_min.get().strip(), "--height_max", self.single_height_max.get().strip()])
+
+        # Feet
+        extra.extend(["--feet", self.single_feet_mode.get().strip() or "random"])
+        if getattr(self, "single_feet_override", tk.BooleanVar(value=False)).get():
+            lf = self.single_left_foot.get().strip()
+            rf = self.single_right_foot.get().strip()
+            if not lf or not rf:
+                messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
+                return
+            extra.extend(["--left_foot", lf, "--right_foot", rf])
+
+        # Positions
+        if self.single_positions_random.get():
+            extra.extend(["--positions", "RANDOM"])
+        else:
+            sel = [code for code, v in self.single_pos_vars.items() if v.get()]
+            if not sel:
+                messagebox.showerror("Positions missing", "Please select at least one position, or tick Random positions.")
+                return
+            extra.extend(["--positions", ",".join(sel)])
 
         self._run_generator_common(
             script_path=self.single_script.get().strip(),
@@ -435,9 +771,10 @@ class App(tk.Tk):
             ca_max=ca,
             pa_min=pa,
             pa_max=pa,
-            base_year=self.single_base_year.get().strip(),
+            base_year=base_year,
             seed=self.single_seed.get().strip(),
             title="Single Generator",
+            extra_args=extra,
         )
 
     def _run_generator_common(
@@ -457,6 +794,7 @@ class App(tk.Tk):
         base_year: str,
         seed: str,
         title: str,
+        extra_args: list[str] | None = None,
     ) -> None:
         if not script_path or not Path(script_path).exists():
             messagebox.showerror("Missing script", "Please choose a valid generator .py script.")
@@ -482,7 +820,7 @@ class App(tk.Tk):
         try:
             ensure_parent_dir(out_path)
         except Exception as e:
-            messagebox.showerror("Output folder error", f"Could not create output folder:\n{e}")
+            messagebox.showerror("Output folder error", "Could not create output folder: " + str(e))
             return
 
         cmd = [
@@ -503,6 +841,8 @@ class App(tk.Tk):
         ]
         if seed:
             cmd.extend(["--seed", seed])
+        if extra_args:
+            cmd.extend([x for x in extra_args if x is not None and str(x) != ""])
 
         self._run_async_stream(title, cmd, must_create=out_path)
 

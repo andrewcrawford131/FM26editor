@@ -224,6 +224,15 @@ def _parse_ymd(s: str) -> dt.date:
     y, mo, d = map(int, m.groups())
     return dt.date(y, mo, d)
 
+
+def _random_dob_between(rng: random.Random, start: dt.date, end: dt.date) -> dt.date:
+    """Random date between start and end (inclusive)."""
+    if end < start:
+        raise ValueError("DOB range end must be >= start")
+    a = start.toordinal()
+    b = end.toordinal()
+    return dt.date.fromordinal(rng.randint(a, b))
+
 def _pick_weighted(rng: random.Random, items: Sequence[Tuple[str, float]]) -> str:
     tot = sum(w for _, w in items)
     x = rng.random() * tot
@@ -260,7 +269,23 @@ def _pos_map(rng: random.Random, selected: List[str]) -> Dict[str, int]:
         return {"GK": rng.randint(15, 20)}
     return {p: rng.randint(15, 20) for p in sel}
 
-def _foot(rng: random.Random) -> Tuple[int, int]:
+def _foot(rng: random.Random, mode: str = "random") -> Tuple[int, int]:
+    """Return (left, right) foot ratings 1..20.
+
+    mode:
+      - random: weighted Right/Left/Both
+      - right: right-footed bias (R strong, L weaker)
+      - left:  left-footed bias
+      - both:  two-footed (both strong)
+    """
+    mode = (mode or "random").strip().lower()
+    if mode == "right":
+        return rng.randint(1, 10), rng.randint(15, 20)
+    if mode == "left":
+        return rng.randint(15, 20), rng.randint(1, 10)
+    if mode == "both":
+        return rng.randint(15, 20), rng.randint(15, 20)
+    # random (weighted)
     k = _pick_weighted(rng, [("R", 0.72), ("L", 0.20), ("B", 0.08)])
     if k == "R":
         return rng.randint(1, 10), rng.randint(15, 20)
@@ -363,11 +388,18 @@ def generate_players_xml(
     first_names_csv: str = "scottish_male_first_names_2500.csv",
     surnames_csv: str = "scottish_surnames_2500.csv",
     fixed_dob: Optional[dt.date] = None,
+    dob_start: Optional[dt.date] = None,
+    dob_end: Optional[dt.date] = None,
     fixed_height: Optional[int] = None,
+    height_min: int = 150,
+    height_max: int = 210,
     fixed_club: Optional[Tuple[int, int]] = None,
     fixed_city: Optional[Tuple[int, int]] = None,
     fixed_nation: Optional[Tuple[int, int]] = None,
     fixed_positions: Optional[List[str]] = None,
+    feet_mode: str = "random",
+    fixed_left_foot: Optional[int] = None,
+    fixed_right_foot: Optional[int] = None,
     nationality_info_value: int = 85,
 ) -> None:
     if seed is None:
@@ -380,8 +412,26 @@ def generate_players_xml(
         raise ValueError("PA must be 0..200")
     if age_max < age_min or age_min < 1:
         raise ValueError("invalid age range")
-    if fixed_height is not None and not (150 <= fixed_height <= 210):
-        raise ValueError("height must be 150..210")
+
+    if fixed_height is not None:
+        if not (150 <= fixed_height <= 210):
+            raise ValueError("height must be 150..210")
+    else:
+        if not (150 <= height_min <= 210 and 150 <= height_max <= 210 and height_min <= height_max):
+            raise ValueError("height range must be within 150..210 and min<=max")
+
+    if (dob_start is None) ^ (dob_end is None):
+        raise ValueError("DOB range requires both dob_start and dob_end")
+    if dob_start is not None and dob_end is not None and dob_end < dob_start:
+        raise ValueError("DOB range end must be >= start")
+
+    fm = (feet_mode or "random").strip().lower()
+    if fm not in ("random", "right", "left", "both"):
+        raise ValueError("feet_mode must be one of: random, right, left, both")
+    if (fixed_left_foot is None) ^ (fixed_right_foot is None):
+        raise ValueError("If fixing feet, set BOTH fixed_left_foot and fixed_right_foot")
+    if fixed_left_foot is not None and not (1 <= fixed_left_foot <= 20 and 1 <= fixed_right_foot <= 20):
+        raise ValueError("Fixed feet values must be 1..20")
 
     clubs, cities, nations = load_master_library(library_csv)
     if not clubs:
@@ -428,8 +478,8 @@ def generate_players_xml(
         fn = rng.choice(first)
         sn = rng.choice(sur)
         cn = f"{fn} {sn}"
-        height = fixed_height if fixed_height is not None else rng.randint(150, 210)
-        dob = fixed_dob if fixed_dob is not None else _random_dob(rng, rng.randint(age_min, age_max), base_year)
+        height = fixed_height if fixed_height is not None else rng.randint(height_min, height_max)
+        dob = fixed_dob if fixed_dob is not None else (_random_dob_between(rng, dob_start, dob_end) if (dob_start is not None and dob_end is not None) else _random_dob(rng, rng.randint(age_min, age_max), base_year))
 
         ca = rng.randint(ca_min, ca_max)
         pa = rng.randint(pa_min, pa_max)
@@ -448,7 +498,7 @@ def generate_players_xml(
         pos_sel = [p.strip().upper() for p in (fixed_positions or []) if p.strip()]
         pos_map = _pos_map(rng, pos_sel)
 
-        left, right = _foot(rng)
+        left, right = (fixed_left_foot, fixed_right_foot) if (fixed_left_foot is not None) else _foot(rng, feet_mode)
         wage = rng.randint(20, 80)
         rep = 30
         tv = _tv_from_pa(pa)
@@ -556,8 +606,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--base_year", type=int, default=2026)
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--version", type=int, default=DEFAULT_VERSION)
-    ap.add_argument("--dob", default="")
-    ap.add_argument("--height", type=int, default=0)
+    ap.add_argument("--dob", default="")  # fixed DOB YYYY-MM-DD (single or force same for all)
+    ap.add_argument("--dob_start", default="")  # DOB range start YYYY-MM-DD (batch)
+    ap.add_argument("--dob_end", default="")    # DOB range end YYYY-MM-DD (batch)
+    ap.add_argument("--height", type=int, default=0)  # fixed height (cm)
+    ap.add_argument("--height_min", type=int, default=150)
+    ap.add_argument("--height_max", type=int, default=210)
+    ap.add_argument("--feet", default="random", choices=["random","right","left","both"])
+    ap.add_argument("--left_foot", type=int, default=0)   # optional fixed 1..20
+    ap.add_argument("--right_foot", type=int, default=0)  # optional fixed 1..20
     ap.add_argument("--club_dbid", type=int, default=0)
     ap.add_argument("--club_large", type=int, default=0)
     ap.add_argument("--city_dbid", type=int, default=0)
@@ -578,10 +635,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     fixed_dob = _parse_ymd(args.dob) if args.dob else None
+    dob_start = _parse_ymd(args.dob_start) if args.dob_start else None
+    dob_end = _parse_ymd(args.dob_end) if args.dob_end else None
     fixed_height = args.height if args.height else None
+    height_min = int(args.height_min)
+    height_max = int(args.height_max)
     fixed_club = (args.club_dbid, args.club_large) if (args.club_dbid and args.club_large) else None
     fixed_city = (args.city_dbid, args.city_large) if (args.city_dbid and args.city_large) else None
     fixed_nation = (args.nation_dbid, args.nation_large) if (args.nation_dbid and args.nation_large) else None
+
+    fixed_left_foot = args.left_foot if args.left_foot else None
+    fixed_right_foot = args.right_foot if args.right_foot else None
+    feet_mode = args.feet
 
     fixed_positions = None
     if args.positions:
@@ -614,11 +679,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             first_names_csv=args.first_names,
             surnames_csv=args.surnames,
             fixed_dob=fixed_dob,
+            dob_start=dob_start,
+            dob_end=dob_end,
             fixed_height=fixed_height,
+            height_min=height_min,
+            height_max=height_max,
             fixed_club=fixed_club,
             fixed_city=fixed_city,
             fixed_nation=fixed_nation,
             fixed_positions=fixed_positions,
+            feet_mode=feet_mode,
+            fixed_left_foot=fixed_left_foot,
+            fixed_right_foot=fixed_right_foot,
             nationality_info_value=args.nationality_info_value,
         )
     except Exception as e:
