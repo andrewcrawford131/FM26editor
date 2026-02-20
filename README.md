@@ -1,2 +1,2 @@
 # FM26editor
-FM26 Pre Game Editor to batch create players etc quickly to import into FM26 potentially FM 22-24
+FM26 Player Generator is a Python-based, cross-platform Football Manager player generation toolkit for creating players in FM db_changes XML files, with powerful batch processing for faster workflows than manual editing. It supports single and bulk generation, randomized or fixed values, and can also work with older compatible FM XML editors by adjusting base_year for correct ages/dates.
