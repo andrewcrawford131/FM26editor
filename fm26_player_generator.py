@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-"""FM26 Players Generator (db changes XML) - stable SHA256 IDs.
+"""FM26 Players Generator (db changes XML) - stable SHA256 IDs (randomized names across runs, v6.1 foot modes).
 
 Batch:
   python fm26_bulk_youth_generator2.py --master_library master_library.csv --count 10000 --output fm26_players.xml --seed 123
@@ -22,6 +22,7 @@ import argparse
 import csv
 import datetime as dt
 import hashlib
+import json
 import os
 import random
 import re
@@ -96,9 +97,56 @@ DEFAULT_NNAT_ODVL = 3285649982205  # safe default seen in samples
 INT32_MOD = 2147483646
 INT64_MOD = 9223372036854775806
 
+# Per-run namespace salt for generated IDs. Prevents ID reuse across runs when the
+# same --seed is reused (attribute RNG remains seeded as before).
+ID_NAMESPACE_SALT = ""
+
+def _default_id_registry_path() -> str:
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    return os.path.join(base, "fm26_player_generator_id_registry.json")
+
+def _load_id_registry(path: str) -> Dict[str, object]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    if not isinstance(data.get("next_run_serial"), int) or int(data.get("next_run_serial", 0)) < 1:
+        data["next_run_serial"] = 1
+    data.setdefault("version", 1)
+    return data
+
+def _save_id_registry(path: str, data: Dict[str, object]) -> None:
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+def _reserve_id_namespace(seed: Optional[int], count: int, out_xml: str, registry_path: Optional[str] = None) -> Tuple[str, str]:
+    path = registry_path or _default_id_registry_path()
+    reg = _load_id_registry(path)
+    serial = int(reg.get("next_run_serial", 1))
+    reg["next_run_serial"] = serial + 1
+    reg["last_run"] = {
+        "serial": serial,
+        "seed": seed,
+        "count": int(count),
+        "output": os.path.abspath(out_xml),
+    }
+    _save_id_registry(path, reg)
+    return (f"run{serial}", path)
+
 # ---- stable ids ----
 def _sha(seed: int, i: int, label: str) -> int:
-    h = hashlib.sha256(f"{seed}|{i}|{label}".encode("utf-8")).digest()
+    h = hashlib.sha256(f"{seed}|{ID_NAMESPACE_SALT}|{i}|{label}".encode("utf-8")).digest()
     return int.from_bytes(h, "big")
 
 
@@ -581,17 +629,30 @@ def _tv_from_pa(pa: int) -> int:
 def _foot(rng: random.Random, feet_mode: str) -> Tuple[int, int]:
     """Return (left_foot, right_foot) 1..20.
 
-    Rules:
-      - feet_mode 'left'  -> left=20, right random 1..19
-      - feet_mode 'right' -> right=20, left random 1..19
-      - feet_mode 'both'  -> left=20, right=20
-      - feet_mode 'random' chooses left/right/both (40/40/20)
+    Supported modes:
+      - left_only  -> left=20, right=1..5
+      - left       -> left=20, right=6..14
+      - right_only -> right=20, left=1..5
+      - right      -> right=20, left=6..14
+      - both       -> left=20, right=20
+      - random     -> weighted mix of the above (keeps a realistic spread)
+
+    Notes:
+      - Any unknown mode falls back to 'random'
+      - Exactly one foot is forced to 20 for left/right variants
     """
     mode = (feet_mode or "random").strip().lower()
+
     if mode == "random":
+        # Weighted spread (sums to 100):
+        # left_only 10%, left 30%, right_only 10%, right 30%, both 20%
         r = rng.random()
-        if r < 0.40:
+        if r < 0.10:
+            mode = "left_only"
+        elif r < 0.40:
             mode = "left"
+        elif r < 0.50:
+            mode = "right_only"
         elif r < 0.80:
             mode = "right"
         else:
@@ -599,10 +660,18 @@ def _foot(rng: random.Random, feet_mode: str) -> Tuple[int, int]:
 
     if mode == "both":
         return 20, 20
+
+    if mode == "left_only":
+        return 20, rng.randint(1, 5)
+
+    if mode == "right_only":
+        return rng.randint(1, 5), 20
+
     if mode == "right":
-        return rng.randint(1, 19), 20
+        return rng.randint(6, 14), 20
+
     # default 'left'
-    return 20, rng.randint(1, 19)
+    return 20, rng.randint(6, 14)
 
 
 def _rep_triplet(rng: random.Random, rep_min: int, rep_max: int) -> Tuple[int, int, int]:
@@ -757,6 +826,9 @@ def generate_players_xml(
     transfer_max: int = 0,
     auto_dev_chance: float = 0.15,
     nationality_info_value: int = 85,
+    id_registry_path: Optional[str] = None,
+    id_registry_mode: str = "auto",  # auto|off
+    id_namespace_salt: Optional[str] = None,
 ) -> None:
     if seed is None:
         seed = int(dt.datetime.utcnow().timestamp())
@@ -804,8 +876,8 @@ def generate_players_xml(
         raise ValueError("DOB range end must be >= start")
 
     fm = (feet_mode or "random").strip().lower()
-    if fm not in ("random", "right", "left", "both"):
-        raise ValueError("feet_mode must be one of: random, right, left, both")
+    if fm not in ("random", "left_only", "left", "right_only", "right", "both"):
+        raise ValueError("feet_mode must be one of: random, left_only, left, right_only, right, both")
     if (fixed_left_foot is None) ^ (fixed_right_foot is None):
         raise ValueError("If fixing feet, set BOTH fixed_left_foot and fixed_right_foot")
     if fixed_left_foot is not None and not (1 <= fixed_left_foot <= 20 and 1 <= fixed_right_foot <= 20):
@@ -840,7 +912,23 @@ def generate_players_xml(
 
     first = _load_names(first_names_csv)
     sur = _load_names(surnames_csv)
+
+    if id_registry_mode not in ("auto", "off"):
+        raise ValueError("id_registry_mode must be auto|off")
+    global ID_NAMESPACE_SALT
+    if id_namespace_salt is not None and str(id_namespace_salt).strip():
+        ID_NAMESPACE_SALT = str(id_namespace_salt).strip()
+    elif id_registry_mode == "auto":
+        ID_NAMESPACE_SALT, _id_reg_path = _reserve_id_namespace(seed, count, out_xml, id_registry_path)
+        print(f"[INFO] ID namespace: {ID_NAMESPACE_SALT} (registry: {_id_reg_path})", file=sys.stderr)
+    else:
+        ID_NAMESPACE_SALT = ""
+
     rng = random.Random(seed)
+    # Name RNG is intentionally non-deterministic so repeated runs with the same --seed
+    # (used for stable IDs/output reproducibility) do not always produce the same player name.
+    # This keeps IDs deterministic while making names vary across runs.
+    name_rng = random.SystemRandom()
 
     existing = _count_existing(out_xml) if append and os.path.exists(out_xml) else 0
 
@@ -882,8 +970,8 @@ def generate_players_xml(
         rid_create = _uniq(_id32, seed, i, "rid|create", used32)
         frags.append(_create(create_uid, person_uid, rid_create, version))
 
-        fn = rng.choice(first)
-        sn = rng.choice(sur)
+        fn = name_rng.choice(first)
+        sn = name_rng.choice(sur)
         cn = f"{fn} {sn}"
         height = fixed_height if fixed_height is not None else rng.randint(height_min, height_max)
         if fixed_dob is not None:
@@ -1094,6 +1182,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--pa_max", type=int, default=200)
     ap.add_argument("--base_year", type=int, default=2026)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--id_registry_mode", choices=["auto", "off"], default="auto")
+    ap.add_argument("--id_registry_path", default=None)
+    ap.add_argument("--id_namespace_salt", default=None)
     ap.add_argument("--version", type=int, default=DEFAULT_VERSION)
 
     ap.add_argument("--dob", default="")
@@ -1104,7 +1195,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--height_min", type=int, default=150)
     ap.add_argument("--height_max", type=int, default=210)
 
-    ap.add_argument("--feet", default="random", choices=["random", "right", "left", "both"])
+    ap.add_argument("--feet", default="random", choices=["random", "left_only", "left", "right_only", "right", "both"])
 
     # Wage / Reputation / Transfer value
     ap.add_argument("--wage", type=int, default=0)
@@ -1281,6 +1372,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             transfer_min=args.transfer_min,
             transfer_max=args.transfer_max,
             nationality_info_value=args.nationality_info_value,
+            id_registry_path=args.id_registry_path,
+            id_registry_mode=args.id_registry_mode,
+            id_namespace_salt=args.id_namespace_salt,
         )
     except Exception as e:
         print(f"[FAIL] {e}", file=sys.stderr)

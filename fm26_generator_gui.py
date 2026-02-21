@@ -30,9 +30,11 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-APP_TITLE = "FM26 DBChanges Tools (Library Extractor + Players Generator) — Friendly v16 (feet override + built-in calendar)"
-DEFAULT_EXTRACT_SCRIPT = "fm_dbchanges_extract_fixed_v4.py"
-DEFAULT_GENERATE_SCRIPT = "fm26_bulk_youth_generator4_fixed_v3.py"
+APP_TITLE = "FM26 Generator"
+DEFAULT_EXTRACT_SCRIPT = "fm26_db_extractor.py"
+DEFAULT_GENERATE_SCRIPT = "fm26_player_generator.py"
+DEFAULT_XML_APPENDER_SCRIPT = "fm26_xml_appender.py"
+
 # Positions list must match the generator's internal POS map.
 ALL_POS = ["GK","DL","DC","DR","WBL","WBR","DM","ML","MC","MR","AML","AMC","AMR","ST"]
 
@@ -284,14 +286,15 @@ class App(tk.Tk):
 
         self.batch_tab = ttk.Frame(self.players_notebook)
         self.single_tab = ttk.Frame(self.players_notebook)
+        self.appender_tab = ttk.Frame(self.players_notebook)
         self.players_notebook.add(self.batch_tab, text="Batch")
         self.players_notebook.add(self.single_tab, text="Single (1 Player)")
+        self.players_notebook.add(self.appender_tab, text="XML Appender")
 
         # Sticky action bars + scrollable content
         self.batch_actionbar = ttk.Frame(self.batch_tab)
         self.batch_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
         ttk.Button(self.batch_actionbar, text="Run Batch Generator", command=self._run_batch_generator).pack(side="left")
-        ttk.Button(self.batch_actionbar, text="Show Output", command=self._toggle_output).pack(side="right")
 
         batch_holder = ttk.Frame(self.batch_tab)
         batch_holder.pack(side="top", fill="both", expand=True)
@@ -300,11 +303,18 @@ class App(tk.Tk):
         self.single_actionbar = ttk.Frame(self.single_tab)
         self.single_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
         ttk.Button(self.single_actionbar, text="Generate 1 Player", command=self._run_single_generator).pack(side="left")
-        ttk.Button(self.single_actionbar, text="Show Output", command=self._toggle_output).pack(side="right")
 
         single_holder = ttk.Frame(self.single_tab)
         single_holder.pack(side="top", fill="both", expand=True)
         self.single_body = self._make_scrollable(single_holder)
+
+        self.appender_actionbar = ttk.Frame(self.appender_tab)
+        self.appender_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        ttk.Button(self.appender_actionbar, text="Run XML Appender", command=self._run_xml_appender).pack(side="left")
+
+        appender_holder = ttk.Frame(self.appender_tab)
+        appender_holder.pack(side="top", fill="both", expand=True)
+        self.appender_body = self._make_scrollable(appender_holder)
 
         # Bottom log area (hidden by default)
         log_frame = ttk.Frame(self.paned)
@@ -329,6 +339,7 @@ class App(tk.Tk):
         self._build_extractor_tab()
         self._build_batch_tab()
         self._build_single_tab()
+        self._build_appender_tab()
         self.after(200, self._reload_master_library)
 
     # ---------------- Logging helpers ----------------
@@ -376,7 +387,7 @@ class App(tk.Tk):
     def _toggle_paths(self) -> None:
         """Show/hide the file path inputs (hidden by default)."""
         target = not getattr(self, "_paths_visible", False)
-        for fr in (getattr(self, "batch_paths_frame", None), getattr(self, "single_paths_frame", None)):
+        for fr in (getattr(self, "batch_paths_frame", None), getattr(self, "single_paths_frame", None), getattr(self, "appender_paths_frame", None)):
             if fr is None:
                 continue
             try:
@@ -417,32 +428,64 @@ class App(tk.Tk):
         inner.bind("<Configure>", _on_inner_config)
         canvas.bind("<Configure>", _on_canvas_config)
 
-        # Mouse wheel support
-        def _on_mousewheel(event):
+        # Mouse wheel support (Windows/macOS/Linux) – works while cursor is over any child widget
+        def _is_descendant_of(widget, ancestor) -> bool:
             try:
-                if sys.platform.startswith("darwin"):
-                    canvas.yview_scroll(int(-event.delta), "units")
-                else:
-                    delta = int(event.delta / 120) if event.delta else 0
-                    if delta:
-                        canvas.yview_scroll(-delta, "units")
+                w = widget
+                while w is not None:
+                    if w == ancestor:
+                        return True
+                    parent_name = w.winfo_parent()
+                    if not parent_name:
+                        break
+                    w = w.nametowidget(parent_name)
+            except Exception:
+                return False
+            return False
+
+        def _pointer_over_this_scroll_area() -> bool:
+            try:
+                px = self.winfo_pointerx()
+                py = self.winfo_pointery()
+                w = self.winfo_containing(px, py)
+                return _is_descendant_of(w, wrapper)
+            except Exception:
+                return False
+
+        def _scroll_units(units: int):
+            try:
+                if not _pointer_over_this_scroll_area():
+                    return
+                if units:
+                    canvas.yview_scroll(units, "units")
             except Exception:
                 pass
 
-        def _bind(_event=None):
-            canvas.bind_all("<MouseWheel>", _on_mousewheel)
-            canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"))
-            canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(3, "units"))
+        def _on_mousewheel(event):
+            try:
+                if not _pointer_over_this_scroll_area():
+                    return
+                # macOS often reports small deltas; Windows is usually +/-120 multiples
+                if sys.platform.startswith("darwin"):
+                    delta = int(event.delta)
+                    if delta != 0:
+                        canvas.yview_scroll(-delta, "units")
+                else:
+                    delta = int(event.delta)
+                    if delta == 0:
+                        return
+                    steps = int(delta / 120)
+                    if steps == 0:
+                        steps = 1 if delta > 0 else -1
+                    canvas.yview_scroll(-steps, "units")
+            except Exception:
+                pass
 
-        def _unbind(_event=None):
-            canvas.unbind_all("<MouseWheel>")
-            canvas.unbind_all("<Button-4>")
-            canvas.unbind_all("<Button-5>")
-
-        inner.bind("<Enter>", _bind)
-        inner.bind("<Leave>", _unbind)
-        canvas.bind("<Enter>", _bind)
-        canvas.bind("<Leave>", _unbind)
+        # Bind globally once per scroll area; handler self-filters by mouse position.
+        # This avoids <Leave> unbinding when moving between child widgets inside the form.
+        self.bind_all("<MouseWheel>", _on_mousewheel, add="+")
+        self.bind_all("<Button-4>", lambda e: _scroll_units(-3), add="+")  # Linux up
+        self.bind_all("<Button-5>", lambda e: _scroll_units(3), add="+")   # Linux down
 
         return inner
 
@@ -491,7 +534,7 @@ class App(tk.Tk):
 
         # Feet mode
         ttk.Label(hf, text="Feet").grid(row=2, column=0, sticky="w", padx=8, pady=6)
-        ttk.Combobox(hf, textvariable=feet_mode_var, values=["random", "right", "left", "both"], width=10, state="readonly").grid(row=2, column=1, sticky="w", padx=8, pady=6)
+        ttk.Combobox(hf, textvariable=feet_mode_var, values=["random", "left_only", "left", "right_only", "right", "both"], width=14, state="readonly").grid(row=2, column=1, sticky="w", padx=8, pady=6)
 
         # Feet override
         ttk.Checkbutton(hf, text="Override foot ratings (1–20)", variable=feet_override_var).grid(row=2, column=2, columnspan=3, sticky="w", padx=8, pady=6)
@@ -530,15 +573,24 @@ class App(tk.Tk):
             lf = max(1, min(20, _as_int(left_foot_var.get(), 10)))
             rf = max(1, min(20, _as_int(right_foot_var.get(), 10)))
 
-            # Force rules
-            if mode == "right":
+            # Force rules aligned to generator v6 feet modes
+            if mode == "both":
+                lf = 20
                 rf = 20
-                lf = min(lf, 19)
+            elif mode == "left_only":
+                lf = 20
+                rf = max(1, min(5, rf))
             elif mode == "left":
                 lf = 20
-                rf = min(rf, 19)
+                rf = max(6, min(14, rf))
+            elif mode == "right_only":
+                rf = 20
+                lf = max(1, min(5, lf))
+            elif mode == "right":
+                rf = 20
+                lf = max(6, min(14, lf))
             else:
-                # both/random
+                # random mode: ensure at least one foot is 20
                 if lf < 20 and rf < 20:
                     rf = 20
 
@@ -863,7 +915,6 @@ class App(tk.Tk):
 
         btnrow = ttk.Frame(opt)
         btnrow.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
-        ttk.Button(btnrow, text="Run Batch Generator", command=self._run_batch_generator).pack(anchor="w")
 
         # DOB options
         dob = ttk.LabelFrame(frm, text="DOB (Age range OR calendar range)")
@@ -943,7 +994,7 @@ class App(tk.Tk):
         ttk.Entry(money, textvariable=self.batch_tv_min, width=12).grid(row=4, column=6, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="to").grid(row=4, column=7, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.batch_tv_max, width=12).grid(row=4, column=8, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="(auto uses PA)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
 
         # Club / City / Nation selection
         sel = ttk.LabelFrame(frm, text="Club / City / Nation")
@@ -987,7 +1038,7 @@ class App(tk.Tk):
         ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.batch_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
 
         grid = ttk.Frame(pos)
-        grid.grid(row=1, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 8))
+        grid.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
         cols = 7
         for i, code in enumerate(ALL_POS):
             r = i // cols
@@ -1005,7 +1056,7 @@ class App(tk.Tk):
                 v.set(False)
 
         tools = ttk.Frame(pos)
-        tools.grid(row=2, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 6))
+        tools.grid(row=1, column=2, columnspan=5, sticky="e", padx=8, pady=6)
         ttk.Button(tools, text="Select all outfield", command=_batch_select_all_outfield).pack(side="left", padx=(0, 6))
         ttk.Button(tools, text="Clear", command=_batch_clear_positions).pack(side="left")
         wf = ttk.LabelFrame(frm, text="Random position distribution (editable)")
@@ -1189,7 +1240,6 @@ class App(tk.Tk):
 
         btnrow = ttk.Frame(opt)
         btnrow.grid(row=1, column=0, columnspan=8, sticky="w", padx=6, pady=(0, 6))
-        ttk.Button(btnrow, text="Generate 1 Player", command=self._run_single_generator).pack(anchor="w")
 
         # Age / DOB
         dob = ttk.LabelFrame(frm, text="Age / DOB")
@@ -1273,7 +1323,7 @@ class App(tk.Tk):
         ttk.Entry(money, textvariable=self.single_tv_min, width=12).grid(row=4, column=6, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="to").grid(row=4, column=7, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.single_tv_max, width=12).grid(row=4, column=8, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="(auto uses PA)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
 
         # Club / City / Nation selection
         sel = ttk.LabelFrame(frm, text="Club / City / Nation")
@@ -1317,7 +1367,7 @@ class App(tk.Tk):
         ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.single_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
 
         grid = ttk.Frame(pos)
-        grid.grid(row=1, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 8))
+        grid.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
         cols = 7
         for i, code in enumerate(ALL_POS):
             r = i // cols
@@ -1334,55 +1384,38 @@ class App(tk.Tk):
             for v in self.single_pos_vars.values():
                 v.set(False)
 
+        pos.columnconfigure(0, weight=1)
+
         tools = ttk.Frame(pos)
-        tools.grid(row=2, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 6))
+        tools.grid(row=2, column=0, sticky="e", padx=8, pady=(0, 6))
         ttk.Button(tools, text="Select all outfield", command=_single_select_all_outfield).pack(side="left", padx=(0, 6))
         ttk.Button(tools, text="Clear", command=_single_clear_positions).pack(side="left")
-        wf = ttk.LabelFrame(frm, text="Random position distribution (editable)")
+        wf = ttk.LabelFrame(frm, text="Random position distribution (fixed)")
         wf.grid(row=11, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         for c in range(10):
             wf.columnconfigure(c, weight=1)
 
         ttk.Label(
             wf,
-            text="Used ONLY when 'Random positions' is ON. Totals must equal 100%.",
+            text="Primary role split (%): GK 15 | DEF 35 | MID 35 | ST 15",
             foreground="#444"
         ).grid(row=0, column=0, columnspan=10, sticky="w", padx=8, pady=(6, 2))
 
-        ttk.Label(wf, text="Primary role split (%)").grid(row=1, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 2))
-
-        ttk.Label(wf, text="GK").grid(row=2, column=0, sticky="w", padx=8)
-        ttk.Entry(wf, textvariable=self.batch_dist_gk, width=6).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 6))
-
-        ttk.Label(wf, text="DEF").grid(row=2, column=1, sticky="w", padx=8)
-        ttk.Entry(wf, textvariable=self.batch_dist_def, width=6).grid(row=3, column=1, sticky="w", padx=8, pady=(0, 6))
-
-        ttk.Label(wf, text="MID").grid(row=2, column=2, sticky="w", padx=8)
-        ttk.Entry(wf, textvariable=self.batch_dist_mid, width=6).grid(row=3, column=2, sticky="w", padx=8, pady=(0, 6))
-
-        ttk.Label(wf, text="ST").grid(row=2, column=3, sticky="w", padx=8)
-        ttk.Entry(wf, textvariable=self.batch_dist_st, width=6).grid(row=3, column=3, sticky="w", padx=8, pady=(0, 6))
-
-        ttk.Label(wf, text="Outfield positions rated 20: chance (%)").grid(row=4, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 2))
+        ttk.Label(wf, text="Outfield positions rated 20: chance (%)").grid(row=1, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 4))
 
         headers = ["1","2","3","4","5","6","7","8–12","13"]
-        vars_ = [
-            self.batch_n20_1, self.batch_n20_2, self.batch_n20_3, self.batch_n20_4,
-            self.batch_n20_5, self.batch_n20_6, self.batch_n20_7, self.batch_n20_8_12, self.batch_n20_13
-        ]
+        values  = ["39","18","13","11","8","5.5","3.6","1.4","0.5"]
 
         for i, h in enumerate(headers):
-            ttk.Label(wf, text=h).grid(row=5, column=i, sticky="w", padx=8, pady=2)
-        for i, v in enumerate(vars_):
-            ttk.Entry(wf, textvariable=v, width=6).grid(row=6, column=i, sticky="w", padx=8, pady=(0, 6))
+            ttk.Label(wf, text=h).grid(row=2, column=i, sticky="w", padx=8, pady=2)
+        for i, v in enumerate(values):
+            ttk.Label(wf, text=v).grid(row=3, column=i, sticky="w", padx=8, pady=(0, 6))
 
-        def _reset_pos_dists():
-            self.batch_dist_gk.set("15"); self.batch_dist_def.set("35"); self.batch_dist_mid.set("35"); self.batch_dist_st.set("15")
-            self.batch_n20_1.set("39"); self.batch_n20_2.set("18"); self.batch_n20_3.set("13"); self.batch_n20_4.set("11")
-            self.batch_n20_5.set("8"); self.batch_n20_6.set("5.5"); self.batch_n20_7.set("3.6"); self.batch_n20_8_12.set("1.4"); self.batch_n20_13.set("0.5")
-
-        ttk.Button(wf, text="Reset defaults", command=_reset_pos_dists).grid(row=7, column=0, sticky="w", padx=8, pady=(0, 6))
-
+        ttk.Label(
+            wf,
+            text="Note: Distribution is built into fm26_bulk_youth_generator4.py (not editable here).",
+            foreground="#444"
+        ).grid(row=4, column=0, columnspan=10, sticky="w", padx=8, pady=(0, 6))
         # Development positions (2..19) - auto-selected by generator for multi-position profiles
         dev = ttk.LabelFrame(frm, text="Development positions (2–19)")
         dev.grid(row=12, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
@@ -1724,54 +1757,7 @@ class App(tk.Tk):
 
         # Positions
         if self.single_positions_random.get():
-            # RANDOM positions: validate + pass editable distributions (same as Batch tab)
-            def _f(name: str, s: str) -> float:
-                try:
-                    return float(s)
-                except Exception:
-                    raise ValueError(f"{name} must be a number")
-
-            try:
-                gk = _f("GK %", self.batch_dist_gk.get().strip())
-                de = _f("DEF %", self.batch_dist_def.get().strip())
-                mi = _f("MID %", self.batch_dist_mid.get().strip())
-                st = _f("ST %", self.batch_dist_st.get().strip())
-                total = gk + de + mi + st
-                if abs(total - 100.0) > 0.001:
-                    diff = 100.0 - total
-                    messagebox.showerror(
-                        "Primary role split must total 100%",
-                        f"Your GK/DEF/MID/ST totals {total:.3f}%. Difference: {diff:+.3f}%."
-                    )
-                    return
-
-                n20_vals = [
-                    _f("N20(1)", self.batch_n20_1.get().strip()),
-                    _f("N20(2)", self.batch_n20_2.get().strip()),
-                    _f("N20(3)", self.batch_n20_3.get().strip()),
-                    _f("N20(4)", self.batch_n20_4.get().strip()),
-                    _f("N20(5)", self.batch_n20_5.get().strip()),
-                    _f("N20(6)", self.batch_n20_6.get().strip()),
-                    _f("N20(7)", self.batch_n20_7.get().strip()),
-                    _f("N20(8–12)", self.batch_n20_8_12.get().strip()),
-                    _f("N20(13)", self.batch_n20_13.get().strip()),
-                ]
-                total2 = sum(n20_vals)
-                if abs(total2 - 100.0) > 0.001:
-                    diff2 = 100.0 - total2
-                    messagebox.showerror(
-                        "N20 distribution must total 100%",
-                        f"Your 1..7, 8–12, 13 totals {total2:.3f}%. Difference: {diff2:+.3f}%."
-                    )
-                    return
-            except ValueError as e:
-                messagebox.showerror("Invalid distribution value", str(e))
-                return
-
             extra.extend(["--positions", "RANDOM"])
-            extra.extend(["--pos_primary_dist", f"{gk},{de},{mi},{st}"])
-            extra.extend(["--pos_n20_dist", ",".join([str(x) for x in n20_vals])])
-
             if self.single_dev_enable.get():
                 extra.extend(["--auto_dev_chance", (self.single_auto_dev_chance.get().strip() or "0")])
             else:
@@ -1988,6 +1974,240 @@ class App(tk.Tk):
 
         threading.Thread(target=worker, daemon=True).start()
 
+
+
+    # ---------------- XML Appender (merge/append db_changes XML files) ----------------
+
+    def _pick_py_script_var(self, var: tk.StringVar) -> None:
+        p = filedialog.askopenfilename(
+            title="Select Python script",
+            initialdir=str(self.base_dir),
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")]
+        )
+        if p:
+            var.set(p)
+
+    def _pick_xml_target_open(self, var: tk.StringVar) -> None:
+        p = filedialog.askopenfilename(
+            title="Select target db_changes XML",
+            initialdir=str(self.fm_dir),
+            filetypes=[("XML files", "*.xml"), ("All files", "*.*")]
+        )
+        if p:
+            var.set(p)
+
+    def _pick_xml_output_save(self, var: tk.StringVar) -> None:
+        p = filedialog.asksaveasfilename(
+            title="Save merged XML as",
+            initialdir=str(self.fm_dir),
+            defaultextension=".xml",
+            filetypes=[("XML files", "*.xml"), ("All files", "*.*")]
+        )
+        if p:
+            var.set(p)
+
+    def _appender_refresh_source_list(self) -> None:
+        lb = getattr(self, "appender_sources_listbox", None)
+        if lb is None:
+            return
+        try:
+            lb.delete(0, "end")
+            for p in getattr(self, "appender_sources", []):
+                lb.insert("end", p)
+            self.appender_sources_count.set(f"{len(getattr(self, 'appender_sources', []))} source file(s) selected")
+        except Exception:
+            pass
+
+    def _appender_add_sources(self) -> None:
+        picks = filedialog.askopenfilenames(
+            title="Select source XML file(s) to append",
+            initialdir=str(self.fm_dir),
+            filetypes=[("XML files", "*.xml"), ("All files", "*.*")]
+        )
+        if not picks:
+            return
+        seen = {str(Path(p).resolve()) for p in getattr(self, "appender_sources", [])}
+        for p in picks:
+            try:
+                rp = str(Path(p).resolve())
+            except Exception:
+                rp = str(p)
+            if rp not in seen:
+                self.appender_sources.append(str(p))
+                seen.add(rp)
+        self._appender_refresh_source_list()
+
+    def _appender_add_folder_xml(self) -> None:
+        d = filedialog.askdirectory(title="Select folder containing XML files", initialdir=str(self.fm_dir))
+        if not d:
+            return
+        folder = Path(d)
+        files = sorted([p for p in folder.glob("*.xml") if p.is_file()])
+        if not files:
+            messagebox.showinfo("No XML files", f"No .xml files were found in:\n{folder}")
+            return
+        seen = {str(Path(p).resolve()) for p in getattr(self, "appender_sources", [])}
+        added = 0
+        for p in files:
+            rp = str(p.resolve())
+            if rp not in seen:
+                self.appender_sources.append(str(p))
+                seen.add(rp)
+                added += 1
+        self._appender_refresh_source_list()
+        self._log(f"[OK] XML Appender: added {added} XML file(s) from folder:\n  {folder}\n")
+
+    def _appender_remove_selected(self) -> None:
+        lb = getattr(self, "appender_sources_listbox", None)
+        if lb is None:
+            return
+        sel = list(lb.curselection())
+        if not sel:
+            return
+        keep = []
+        selset = set(int(i) for i in sel)
+        for idx, p in enumerate(getattr(self, "appender_sources", [])):
+            if idx not in selset:
+                keep.append(p)
+        self.appender_sources = keep
+        self._appender_refresh_source_list()
+
+    def _appender_clear_sources(self) -> None:
+        self.appender_sources = []
+        self._appender_refresh_source_list()
+
+    def _build_appender_tab(self) -> None:
+        frm = self.appender_body
+        frm.columnconfigure(0, weight=1)
+
+        # State
+        self.appender_script = tk.StringVar(value=str(self.base_dir / DEFAULT_XML_APPENDER_SCRIPT))
+        self.appender_target_xml = tk.StringVar(value=str(self.fm_dir / "fm26_players.xml"))
+        self.appender_output_xml = tk.StringVar(value=str(self.fm_dir / "fm26_merged.xml"))
+        self.appender_sources = []  # list[str]
+        self.appender_sources_count = tk.StringVar(value="0 source file(s) selected")
+
+        self.appender_create_target = tk.BooleanVar(value=False)
+        self.appender_backup = tk.BooleanVar(value=True)
+        self.appender_skip_self = tk.BooleanVar(value=True)
+        self.appender_dry_run = tk.BooleanVar(value=False)
+        self.appender_verbose = tk.BooleanVar(value=True)
+        self.appender_dedupe = tk.StringVar(value="create")
+
+        # File inputs (hidden by default)
+        paths = ttk.LabelFrame(frm, text="File inputs")
+        paths.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 8))
+        paths.columnconfigure(1, weight=1)
+        self.appender_paths_frame = paths
+        paths.grid_remove()
+
+        def row_file(r: int, label: str, var: tk.StringVar, picker):
+            ttk.Label(paths, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
+            ttk.Entry(paths, textvariable=var).grid(row=r, column=1, sticky="ew", padx=(0, 6), pady=6)
+            ttk.Button(paths, text="Browse…", command=lambda: picker(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
+
+        row_file(0, "Appender script:", self.appender_script, self._pick_py_script_var)
+        row_file(1, "Target XML:", self.appender_target_xml, self._pick_xml_target_open)
+        row_file(2, "Output XML (optional):", self.appender_output_xml, self._pick_xml_output_save)
+
+        # Source files selector (always visible)
+        srcf = ttk.LabelFrame(frm, text="Source XML files to append (multi-select)")
+        srcf.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        srcf.columnconfigure(0, weight=1)
+        srcf.rowconfigure(1, weight=1)
+
+        ttk.Label(srcf, text="Select multiple XML files and append them into the target (or output file).").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 4)
+        )
+
+        list_wrap = ttk.Frame(srcf)
+        list_wrap.grid(row=1, column=0, sticky="nsew", padx=(8, 6), pady=(0, 8))
+        list_wrap.columnconfigure(0, weight=1)
+        list_wrap.rowconfigure(0, weight=1)
+
+        self.appender_sources_listbox = tk.Listbox(list_wrap, height=10, selectmode="extended")
+        self.appender_sources_listbox.grid(row=0, column=0, sticky="nsew")
+        lb_scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=self.appender_sources_listbox.yview)
+        lb_scroll.grid(row=0, column=1, sticky="ns")
+        self.appender_sources_listbox.configure(yscrollcommand=lb_scroll.set)
+
+        btns = ttk.Frame(srcf)
+        btns.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
+        ttk.Button(btns, text="Add XML file(s)…", command=self._appender_add_sources).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="Add Folder (*.xml)…", command=self._appender_add_folder_xml).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="Remove Selected", command=self._appender_remove_selected).pack(fill="x", pady=(0, 6))
+        ttk.Button(btns, text="Clear List", command=self._appender_clear_sources).pack(fill="x", pady=(0, 6))
+
+        ttk.Label(srcf, textvariable=self.appender_sources_count, foreground="#444").grid(
+            row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8)
+        )
+
+        # Options
+        opt = ttk.LabelFrame(frm, text="Appender options")
+        opt.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        for c in range(4):
+            opt.columnconfigure(c, weight=1)
+
+        ttk.Checkbutton(opt, text="Create target if missing", variable=self.appender_create_target).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(opt, text="Backup output/target (.bak)", variable=self.appender_backup).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(opt, text="Skip source if same as target", variable=self.appender_skip_self).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(opt, text="Verbose per-file output", variable=self.appender_verbose).grid(row=0, column=3, sticky="w", padx=8, pady=6)
+
+        ttk.Checkbutton(opt, text="Dry run (no write)", variable=self.appender_dry_run).grid(row=1, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(opt, text="Dedupe mode:").grid(row=1, column=1, sticky="e", padx=(8, 6), pady=6)
+        ded_cb = ttk.Combobox(opt, textvariable=self.appender_dedupe, values=["none", "exact", "create"], state="readonly", width=12)
+        ded_cb.grid(row=1, column=2, sticky="w", padx=(0, 8), pady=6)
+        ttk.Label(opt, text="create = skip duplicate player create-record IDs").grid(row=1, column=3, sticky="w", padx=8, pady=6)
+
+        hint = (
+            "Tip: Use this to merge multiple generated XML files (single-player and batch outputs) into one db_changes XML.\n"
+            "You can select multiple files at once, or add a whole folder of XML files."
+        )
+        ttk.Label(frm, text=hint, foreground="#444").grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+
+    def _run_xml_appender(self) -> None:
+        script = self.appender_script.get().strip()
+        target = self.appender_target_xml.get().strip()
+        out_xml = self.appender_output_xml.get().strip()
+
+        if not script:
+            messagebox.showerror("Appender script missing", "Please select the XML Appender Python script.")
+            return
+        if not Path(script).exists():
+            messagebox.showerror("Appender script not found", f"File not found:\n{script}")
+            return
+        if not target:
+            messagebox.showerror("Target XML missing", "Please select or enter a Target XML file.")
+            return
+        if not getattr(self, "appender_sources", []):
+            messagebox.showerror("Source files missing", "Please add one or more source XML files to append.")
+            return
+
+        cmd = [sys.executable, script, "--target", target]
+        for s in self.appender_sources:
+            if str(s).strip():
+                cmd.extend(["--source", str(s)])
+
+        if out_xml:
+            cmd.extend(["--output", out_xml])
+        if self.appender_create_target.get():
+            cmd.append("--create-target")
+        if self.appender_backup.get():
+            cmd.append("--backup")
+        if self.appender_skip_self.get():
+            cmd.append("--skip-self")
+        if self.appender_dry_run.get():
+            cmd.append("--dry-run")
+        if self.appender_verbose.get():
+            cmd.append("--verbose")
+
+        dedupe = (self.appender_dedupe.get() or "none").strip().lower()
+        if dedupe not in ("none", "exact", "create"):
+            dedupe = "none"
+        cmd.extend(["--dedupe", dedupe])
+
+        must_create = None if self.appender_dry_run.get() else (out_xml or target)
+        self._run_async_stream("XML Appender", cmd, must_create=must_create)
 
 def main() -> int:
     try:
