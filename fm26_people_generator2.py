@@ -44,10 +44,6 @@ TBL_CREATE = 55
 PROP_FIRST_NAME = 1348890209
 PROP_SECOND_NAME = 1349742177
 PROP_COMMON_NAME = 1348693601
-PROP_FULL_NAME = 1348889710
-PROP_PERSON_TYPE = 1349810544
-PROP_GENDER = 1349084773
-PROP_ETHNICITY = 1348826216
 PROP_HEIGHT = 1349018995
 PROP_DOB = 1348759394
 PROP_NATIONALITY_INFO = 1349415497
@@ -797,10 +793,6 @@ def generate_players_xml(
     fixed_second_name: Optional[str] = None,
     fixed_common_name: Optional[str] = None,
     fixed_full_name: Optional[str] = None,
-    person_type_value: int = 2,
-    person_type_property: int = PROP_PERSON_TYPE,
-    fixed_gender: Optional[int] = None,
-    fixed_ethnicity: Optional[int] = None,
     fixed_dob: Optional[dt.date] = None,
     dob_start: Optional[dt.date] = None,
     dob_end: Optional[dt.date] = None,
@@ -853,8 +845,8 @@ def generate_players_xml(
         raise ValueError("CA must be 0..200")
     if not (0 <= pa_min <= pa_max <= 200):
         raise ValueError("PA must be 0..200")
-    if age_max < age_min or age_min < 1:
-        raise ValueError("invalid age range")
+    if age_max < age_min or age_min < 1 or age_max > 100:
+        raise ValueError("invalid age range (allowed: 1..100)")
 
     # Wage (minimum 30)
     wage_min = max(30, int(wage_min))
@@ -877,20 +869,6 @@ def generate_players_xml(
     transfer_max = int(transfer_max)
     TV_LO = 100_000
     TV_HI = 2_000_000_000  # allow fixed values above 150m
-
-    # Person type (1=Player, 2=Non-Player)
-    person_type_value = int(person_type_value)
-    if person_type_value not in (1, 2):
-        raise ValueError("person_type_value must be 1 (Non-Player) or 2 (Player)")
-    person_type_property = int(person_type_property or PROP_PERSON_TYPE)
-
-    # Optional detail fields (only written when provided)
-    if fixed_gender is not None:
-        fixed_gender = int(fixed_gender)
-        if fixed_gender not in (0, 1):
-            raise ValueError("gender_value must be 0 (Male) or 1 (Female)")
-    if fixed_ethnicity is not None:
-        fixed_ethnicity = int(fixed_ethnicity)
 
     if fixed_height is not None:
         if not (150 <= fixed_height <= 210):
@@ -1134,20 +1112,10 @@ def generate_players_xml(
         def rid(lbl: str) -> int:
             return _uniq(_id32, seed, i, lbl, used32)
 
-        # person type record (1=Player, 2=Non-Player)
-        if int(person_type_property or 0) > 0:
-            frags.append(_rec(_attr(person_uid, int(person_type_property), _int("new_value", int(person_type_value)), rid("rid|person_type"), version, odvl=_int("odvl", 1)), "Person Type"))
-
         # string fields (with language flag)
         frags.append(_rec(_attr(person_uid, PROP_FIRST_NAME, _str("new_value", fn), rid("rid|fn"), version, extra=lang_extra), "First Name"))
         frags.append(_rec(_attr(person_uid, PROP_SECOND_NAME, _str("new_value", sn), rid("rid|sn"), version, extra=lang_extra), "Second Name"))
         frags.append(_rec(_attr(person_uid, PROP_COMMON_NAME, _str("new_value", cn), rid("rid|cn"), version, extra=lang_extra), "Common Name"))
-        full_name_val = (fixed_full_name.strip() if isinstance(fixed_full_name, str) and fixed_full_name.strip() else f"{fn} {sn}".strip())
-        frags.append(_rec(_attr(person_uid, PROP_FULL_NAME, _str("new_value", full_name_val), rid("rid|fulln"), version, odvl=_str("odvl", f"{fn} {sn}".strip())), "Full Name"))
-        if fixed_gender is not None:
-            frags.append(_rec(_attr(person_uid, PROP_GENDER, _int("new_value", int(fixed_gender)), rid("rid|gender"), version, odvl=_bool("odvl", False)), "Gender"))
-        if fixed_ethnicity is not None:
-            frags.append(_rec(_attr(person_uid, PROP_ETHNICITY, _int("new_value", int(fixed_ethnicity)), rid("rid|ethnicity"), version, odvl=_int("odvl", -1)), "Ethnicity"))
 
         # scalar ints/dates
         frags.append(_rec(_attr(person_uid, PROP_HEIGHT, _int("new_value", int(height)), rid("rid|h"), version, odvl=odvl0), "Height"))
@@ -1307,10 +1275,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--last_name_text", default="", help="Alias for second/surname (optional; compatibility)")
     ap.add_argument("--common_name_text", default="", help="Fixed common name (optional)")
     ap.add_argument("--full_name_text", default="", help="Alias for common name (optional)")
-    ap.add_argument("--person_type_value", type=int, default=2, help="2=Player, 1=Non-Player")
-    ap.add_argument("--person_type_property", type=int, default=PROP_PERSON_TYPE, help="FM XML property ID for Person Type")
-    ap.add_argument("--gender_value", type=int, default=None, help="Optional Gender record: 0=Male, 1=Female")
-    ap.add_argument("--ethnicity_value", type=int, default=None, help="Optional Ethnicity record integer (e.g. -1 unknown, 0 Northern European)")
 
     args = ap.parse_args(argv)
     # Compatibility aliases for GUI variants:
@@ -1418,10 +1382,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             fixed_second_name=(resolved_last_name_text or None),
             fixed_common_name=(args.common_name_text or None),
             fixed_full_name=(resolved_full_name_text or None),
-            person_type_value=args.person_type_value,
-            person_type_property=args.person_type_property,
-            fixed_gender=args.gender_value,
-            fixed_ethnicity=args.ethnicity_value,
             fixed_dob=fixed_dob,
             dob_start=dob_start,
             dob_end=dob_end,
