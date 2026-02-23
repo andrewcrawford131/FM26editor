@@ -1,4 +1,4 @@
-﻿kind,club_dbid,club_dbid_text,ttea_large,ttea_large_text,club_name,city_dbid,city_dbid_text,city_large,city_large_text,city_name,nation_dbid,nation_dbid_text,nnat_large,nnat_large_text,nation_name
+kind,club_dbid,club_dbid_text,ttea_large,ttea_large_text,club_name,city_dbid,city_dbid_text,city_large,city_large_text,city_name,nation_dbid,nation_dbid_text,nnat_large,nnat_large_text,nation_name
 nation,,,,,,,,,,,793,"=""793""",3405909066521,"=""3405909066521""",Scotland
 city,,,,,,102581,"=""102581""",440582040293557,"=""440582040293557""",Aberdeen,,,,,
 city,,,,,,102587,"=""102587""",440607810097339,"=""440607810097339""",,,,,,
@@ -119,3 +119,5 @@ club,2000091995,"=""2000091995""",8590329709516487515,"=""8590329709516487515"""
 club,2000094650,"=""2000094650""",8590341112654661050,"=""8590341112654661050""",,,,,,,,,,,
 club,2000268146,"=""2000268146""",8591086272300821362,"=""8591086272300821362""",,,,,,,,,,,
 club,2000372129,"=""2000372129""",8591532875885265313,"=""8591532875885265313""",,,,,,,,,,,
+nation,,,,,,,,,,,769,"=""769""",3302829851393,"=""3302829851393""",France
+nation,,,,,,,,,,,1649,"=""1649""",7082401072753,"=""7082401072753""",Argentina
