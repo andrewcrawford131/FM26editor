@@ -32,7 +32,7 @@ NATION_PROP = 1349416041
 
 FIELDS = [
     "kind",
-    "club_dbid", "club_dbid_text", "ttea_large", "ttea_large_text", "club_name",
+    "club_dbid", "club_dbid_text", "ttea_large", "ttea_large_text", "club_name", "club_gender",
     "city_dbid", "city_dbid_text", "city_large", "city_large_text", "city_name",
     "nation_dbid", "nation_dbid_text", "nnat_large", "nnat_large_text", "nation_name",
 ]
@@ -80,8 +80,9 @@ def load_existing_library(csv_path: Path):
                 dbid = _safe_int(g(row, "club_dbid"))
                 large = _safe_int(g(row, "ttea_large") or g(row, "club_large") or g(row, "ttea_large_text"))
                 name = g(row, "club_name")
+                club_gender = (g(row, "club_gender") or g(row, "gender")).lower()
                 if dbid is not None and large is not None:
-                    clubs[(dbid, large)] = {"dbid": dbid, "large": large, "name": name}
+                    clubs[(dbid, large)] = {"dbid": dbid, "large": large, "name": name, "club_gender": club_gender}
 
             elif kind == "city":
                 dbid = _safe_int(g(row, "city_dbid"))
@@ -212,7 +213,7 @@ def extract_from_xml(xml_path: Path, debug: bool = False, scan_props: bool = Fal
                 elem.clear()
                 continue
             stats["club_hits"] += 1
-            clubs[(dbid, large)] = {"dbid": dbid, "large": large, "name": ""}
+            clubs[(dbid, large)] = {"dbid": dbid, "large": large, "name": "", "club_gender": ""}
 
         elif prop == CITY_PROP:
             large = _find_value_anywhere(sources, ["city"])
@@ -253,6 +254,11 @@ def merge_preserving_names(existing: dict, new: dict) -> dict:
             new_name = (v.get("name") or "").strip()
             if not ex_name and new_name:
                 existing[k]["name"] = new_name
+            # Preserve manual club gender tags in master CSV (male/female); copy new if existing blank.
+            ex_gender = (existing[k].get("club_gender") or "").strip().lower()
+            new_gender = (v.get("club_gender") or "").strip().lower()
+            if not ex_gender and new_gender:
+                existing[k]["club_gender"] = new_gender
     return existing
 
 
@@ -269,6 +275,7 @@ def write_master_csv(out_path: Path, clubs: dict, cities: dict, nations: dict) -
                 "ttea_large": str(large),
                 "ttea_large_text": excel_text_int(large),
                 "club_name": name,
+                "club_gender": (clubs[(dbid, large)].get("club_gender") or "").strip().lower(),
                 "city_dbid": "", "city_dbid_text": "", "city_large": "", "city_large_text": "", "city_name": "",
                 "nation_dbid": "", "nation_dbid_text": "", "nnat_large": "", "nnat_large_text": "", "nation_name": "",
             }
@@ -278,7 +285,7 @@ def write_master_csv(out_path: Path, clubs: dict, cities: dict, nations: dict) -
             name = (cities[(dbid, large)].get("name") or "").strip()
             yield {
                 "kind": "city",
-                "club_dbid": "", "club_dbid_text": "", "ttea_large": "", "ttea_large_text": "", "club_name": "",
+                "club_dbid": "", "club_dbid_text": "", "ttea_large": "", "ttea_large_text": "", "club_name": "", "club_gender": "",
                 "city_dbid": str(dbid),
                 "city_dbid_text": excel_text_int(dbid),
                 "city_large": str(large),
@@ -292,7 +299,7 @@ def write_master_csv(out_path: Path, clubs: dict, cities: dict, nations: dict) -
             name = (nations[(dbid, large)].get("name") or "").strip()
             yield {
                 "kind": "nation",
-                "club_dbid": "", "club_dbid_text": "", "ttea_large": "", "ttea_large_text": "", "club_name": "",
+                "club_dbid": "", "club_dbid_text": "", "ttea_large": "", "ttea_large_text": "", "club_name": "", "club_gender": "",
                 "city_dbid": "", "city_dbid_text": "", "city_large": "", "city_large_text": "", "city_name": "",
                 "nation_dbid": str(dbid),
                 "nation_dbid_text": excel_text_int(dbid),

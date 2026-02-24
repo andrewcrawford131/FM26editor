@@ -30,9 +30,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-APP_TITLE = "FM26 Generator — Friendly v23 (fmdata defaults + declared youth export)"
+APP_TITLE = "FM26 Generator"
 DEFAULT_EXTRACT_SCRIPT = "fm26_db_extractor.py"
-DEFAULT_GENERATE_SCRIPT = "fm26_people_generator8_fmdata_ready.py"
+DEFAULT_GENERATE_SCRIPT = "fm26_people_generator.py"
 DEFAULT_XML_APPENDER_SCRIPT = "fm26_xml_appender.py"
 
 # Positions list must match the generator's internal POS map.
@@ -261,7 +261,7 @@ class App(tk.Tk):
 
         self.base_dir = Path(__file__).resolve().parent
         self.fm_dir = detect_fm26_editor_data_dir()
-        self.fmdata_dir = self.base_dir / "fmdata"
+        self.fmdata_dir = (self.fm_dir / "fmdata") if self.fm_dir else (self.base_dir / "fmdata")
         try:
             self.fmdata_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -426,6 +426,11 @@ class App(tk.Tk):
         self._build_appender_tab()
         self._init_batch_single_file_sync()
         self.after(200, self._reload_master_library)
+        self.after(350, self._cleanup_other_tabs_fields)
+        self.after(900, self._cleanup_other_tabs_fields)
+        self.after(1800, self._cleanup_other_tabs_fields)
+        self.after(3200, self._cleanup_other_tabs_fields)
+        self.after(1200, self._poll_master_library_changes)
 
     # ---------------- Logging helpers ----------------
 
@@ -977,7 +982,6 @@ class App(tk.Tk):
             ("Skin Tone", "skin_tone", "combo", _skin_tone_labels),
             ("Body Type", "body_type", "combo", _body_type_labels),
             ("City Of Birth", "city_of_birth", "picker_city", None),
-            ("Nation Of Birth", "nation_of_birth", "picker_nation", None),
             ("Nation", "nation", "picker_nation", None),
             ("Region Of Birth", "region_of_birth", "disabled", None),
             ("Nationality Info", "nationality_info", "combo", _nat_info_labels),
@@ -1581,11 +1585,13 @@ class App(tk.Tk):
                 ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
 
         row_file(0, "master_library.csv:", self.batch_clubs, is_save=False)
-        row_file(1, "First names CSV:", self.batch_first, is_save=False)
-        row_file(2, "Surnames CSV:", self.batch_surn, is_save=False)
-        row_file(3, "Output XML:", self.batch_out, is_save=True)
-        row_file(4, "Generator script:", self.batch_script, is_save=False)
-        row_file(5, "Region mapping CSV (placeholder):", self.batch_region_map_csv, is_save=False)
+        row_file(1, "Male first names CSV:", self.batch_first, is_save=False)
+        row_file(2, "Female first names CSV:", self.batch_female_first, is_save=False)
+        row_file(3, "Common names CSV:", self.batch_common_names, is_save=False)
+        row_file(4, "Surnames CSV:", self.batch_surn, is_save=False)
+        row_file(5, "Output XML:", self.batch_out, is_save=True)
+        row_file(6, "Generator script:", self.batch_script, is_save=False)
+        row_file(7, "Region mapping CSV (placeholder):", self.batch_region_map_csv, is_save=False)
 
         genf = ttk.LabelFrame(frm, text="Generation settings (synced with Other)")
         genf.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
@@ -1631,11 +1637,13 @@ class App(tk.Tk):
                 ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
 
         row_file(0, "master_library.csv:", self.single_clubs, is_save=False)
-        row_file(1, "First names CSV:", self.single_first, is_save=False)
-        row_file(2, "Surnames CSV:", self.single_surn, is_save=False)
-        row_file(3, "Output XML:", self.single_out, is_save=True)
-        row_file(4, "Generator script:", self.single_script, is_save=False)
-        row_file(5, "Region mapping CSV (placeholder):", self.single_region_map_csv, is_save=False)
+        row_file(1, "Male first names CSV:", self.single_first, is_save=False)
+        row_file(2, "Female first names CSV:", self.single_female_first, is_save=False)
+        row_file(3, "Common names CSV:", self.single_common_names, is_save=False)
+        row_file(4, "Surnames CSV:", self.single_surn, is_save=False)
+        row_file(5, "Output XML:", self.single_out, is_save=True)
+        row_file(6, "Generator script:", self.single_script, is_save=False)
+        row_file(7, "Region mapping CSV (placeholder):", self.single_region_map_csv, is_save=False)
 
         genf = ttk.LabelFrame(frm, text="Generation settings (synced with Other)")
         genf.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
@@ -1669,6 +1677,8 @@ class App(tk.Tk):
         pairs = [
             ("batch_clubs", "single_clubs", True),            # master_library.csv
             ("batch_first", "single_first", False),           # first names csv
+            ("batch_female_first", "single_female_first", False),  # female first names csv
+            ("batch_common_names", "single_common_names", False),   # common names csv
             ("batch_surn", "single_surn", False),             # surnames csv
             ("batch_script", "single_script", False),         # generator script
             ("batch_region_map_csv", "single_region_map_csv", False),  # region mapping csv placeholder
@@ -1684,6 +1694,24 @@ class App(tk.Tk):
                 b_var.trace_add("write", lambda *args, s=b_var, d=a_var, m=is_master: self._sync_path_vars(s, d, m))
             except Exception:
                 pass
+
+
+    def _poll_master_library_changes(self) -> None:
+        try:
+            p = Path(self._get_current_master_library_path())
+            if p.exists():
+                mt = p.stat().st_mtime
+                if getattr(self, "_master_last_mtime", None) is None:
+                    self._master_last_mtime = mt
+                elif mt != self._master_last_mtime:
+                    self._master_last_mtime = mt
+                    self._reload_master_library()
+        except Exception:
+            pass
+        try:
+            self.after(1200, self._poll_master_library_changes)
+        except Exception:
+            pass
 
     def _sync_path_vars(self, src_var: tk.StringVar, dst_var: tk.StringVar, is_master: bool = False) -> None:
         if getattr(self, "_path_sync_guard", False):
@@ -1714,6 +1742,205 @@ class App(tk.Tk):
             except Exception:
                 p = ""
         return p
+
+    def _details_gender_to_int(self, label: str):
+        lab = (label or "").strip().lower()
+        if not lab:
+            return None
+        if lab in ("male", "m"):
+            return 0
+        if lab in ("female", "f"):
+            return 1
+        raise ValueError("Gender must be Male or Female.")
+
+    def _details_ethnicity_to_int(self, label: str):
+        lab = (label or "").strip()
+        if not lab:
+            return None
+        mapping = {
+            "Unknown": -1,
+            "Northern European": 0,
+            "Mediterranean/Hispanic": 1,
+            "North African/Middle Eastern": 2,
+            "African/Caribbean": 3,
+            "Asian": 4,
+            "South East Asian": 5,
+            "Pacific Islander": 6,
+            "Native American": 7,
+            "Native Australian": 8,
+            "Mixed Race": 9,
+            "East Asian": 10,
+        }
+        if lab not in mapping:
+            raise ValueError("Ethnicity option is not recognised.")
+        return mapping[lab]
+
+    def _cleanup_other_tabs_fields(self):
+        """Best-effort cleanup to hide duplicated DOB sections/rows from Other tabs."""
+        try:
+            targets = []
+            for name in (
+                "player_batch_other_tab", "player_single_other_tab", "batch_other_tab", "single_other_tab",
+                "batch_tab", "single_tab", "batch_body", "single_body",
+                "nonplayer_batch_other_tab", "nonplayer_single_other_tab",
+            ):
+                w = getattr(self, name, None)
+                if w is not None:
+                    targets.append(w)
+            # de-dup widgets by Tcl path if possible
+            seen = set()
+            uniq = []
+            for w in targets:
+                try:
+                    key = str(w)
+                except Exception:
+                    key = id(w)
+                if key in seen:
+                    continue
+                seen.add(key)
+                uniq.append(w)
+
+            for root in uniq:
+                try:
+                    # Hide DOB sections/rows duplicated on Other tabs
+                    self._hide_labelframes_by_title(root, {"dob", "age / dob"})
+                    self._hide_rows_by_label_text(root, {"dob", "date of birth", "fixed dob", "use dob", "age / dob"})
+                    self._hide_widgets_with_text(root, {"dob (calendar range or fixed)", "age / dob"})
+                    # Hide City/Nation rows on Other tabs (keep Club row)
+                    try:
+                        rname = str(root).lower()
+                    except Exception:
+                        rname = ""
+                    if "other" in rname:
+                        self._hide_rows_by_label_text(root, {"city of birth", "nation"})
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _hide_widgets_with_text(self, root, text_matches):
+        """Hide any widget (and its row/frame) whose displayed text matches one of the supplied titles."""
+        try:
+            children = list(root.winfo_children())
+        except Exception:
+            children = []
+        for w in children:
+            # recurse first so nested containers are handled even if parent text is unavailable
+            try:
+                self._hide_widgets_with_text(w, text_matches)
+            except Exception:
+                pass
+            try:
+                txt = str(w.cget("text") or "").strip().lower()
+            except Exception:
+                txt = ""
+            if txt and txt in text_matches:
+                # try hiding the widget itself
+                hidden = False
+                for fn in ("grid_remove", "pack_forget", "place_forget"):
+                    try:
+                        getattr(w, fn)()
+                        hidden = True
+                        break
+                    except Exception:
+                        pass
+                # also try the immediate parent row container (common pattern in this GUI)
+                try:
+                    parent = w.nametowidget(w.winfo_parent())
+                except Exception:
+                    parent = None
+                if parent is not None:
+                    for fn in ("grid_remove", "pack_forget", "place_forget"):
+                        try:
+                            getattr(parent, fn)()
+                            hidden = True
+                            break
+                        except Exception:
+                            pass
+
+    def _hide_labelframes_by_title(self, root, keywords):
+        try:
+            children = list(root.winfo_children())
+        except Exception:
+            children = []
+        for w in children:
+            try:
+                cls = w.winfo_class()
+            except Exception:
+                cls = ""
+            title = ""
+            if cls in ("TLabelframe", "Labelframe", "TLabelFrame", "LabelFrame"):
+                try:
+                    title = str(w.cget("text") or "").strip().lower()
+                except Exception:
+                    title = ""
+                if title and any(k in title for k in keywords):
+                    try:
+                        w.grid_remove()
+                    except Exception:
+                        try:
+                            w.pack_forget()
+                        except Exception:
+                            pass
+            # recurse into containers
+            self._hide_labelframes_by_title(w, keywords)
+
+    def _hide_rows_by_label_text(self, root, keywords):
+        try:
+            children = list(root.winfo_children())
+        except Exception:
+            children = []
+        for w in children:
+            try:
+                cls = w.winfo_class()
+            except Exception:
+                cls = ""
+            if cls in ("TLabel", "Label"):
+                try:
+                    t = str(w.cget("text") or "").strip().lower()
+                except Exception:
+                    t = ""
+                if t and any(k in t for k in keywords):
+                    try:
+                        row = w.grid_info().get("row")
+                        parent = w.nametowidget(w.winfo_parent())
+                        for sib in parent.winfo_children():
+                            try:
+                                if sib.grid_info().get("row") == row:
+                                    sib.grid_remove()
+                            except Exception:
+                                pass
+                    except Exception:
+                        try:
+                            w.grid_remove()
+                        except Exception:
+                            pass
+            self._hide_rows_by_label_text(w, keywords)
+
+    def _apply_club_filter(self, which: str):
+        try:
+            all_clubs = list(getattr(self, "_club_labels_all", []))
+            gender_map = getattr(self, "_club_gender_map", {})
+            if which == "batch":
+                combo = getattr(self, "batch_club_combo", None)
+                sel_var = getattr(self, "batch_club_sel", None)
+                filt_var = getattr(self, "batch_club_gender_filter", None)
+            else:
+                combo = getattr(self, "single_club_combo", None)
+                sel_var = getattr(self, "single_club_sel", None)
+                filt_var = getattr(self, "single_club_gender_filter", None)
+            if combo is None:
+                return
+            filt = (filt_var.get().strip().lower() if filt_var is not None else "any")
+            if filt in ("", "any"):
+                vals = all_clubs
+            else:
+                vals = [c for c in all_clubs if gender_map.get(c, "any") in (filt, "any", "")]
+            combo["values"] = vals
+            if sel_var is not None and sel_var.get() and sel_var.get() not in vals:
+                sel_var.set("")
+        except Exception:
+            pass
 
     def _current_master_library_sig(self):
         try:
@@ -1821,6 +2048,16 @@ class App(tk.Tk):
                         label = f"{name} (DBID {dbid})" if name else f"Club DBID {dbid}"
                         clubs.append(label)
                         club_map[label] = (dbid, lg)
+                        cg = (row.get("club_gender") or row.get("gender") or "").strip().lower()
+                        if cg in ("m", "men", "male", "boys"):
+                            cg = "male"
+                        elif cg in ("f", "women", "woman", "female", "girls", "ladies"):
+                            cg = "female"
+                        else:
+                            cg = "any"
+                        if not hasattr(self, "_club_gender_map"):
+                            self._club_gender_map = {}
+                        self._club_gender_map[label] = cg
                     elif kind == "city":
                         dbid = (row.get("city_dbid") or "").strip()
                         lg = (row.get("city_large") or "").strip()
@@ -1850,14 +2087,15 @@ class App(tk.Tk):
         self._club_map = club_map
         self._city_map = city_map
         self._nation_map = nation_map
+        self._club_labels_all = list(clubs)
+        if not hasattr(self, "_club_gender_map"):
+            self._club_gender_map = {}
 
         for attr, values in [
-            ("batch_club_combo", clubs),
             ("batch_city_combo", cities),
             ("batch_nation_combo", nations),
             ("batch_details_city_combo", cities),
             ("batch_details_region_combo", nations),
-            ("single_club_combo", clubs),
             ("single_city_combo", cities),
             ("single_nation_combo", nations),
             ("single_details_city_combo", cities),
@@ -1869,6 +2107,8 @@ class App(tk.Tk):
                     cb["values"] = values
                 except Exception:
                     pass
+        self._apply_club_filter('batch')
+        self._apply_club_filter('single')
 
         try:
             self._master_library_last_sig = self._current_master_library_sig()
@@ -1983,8 +2223,10 @@ class App(tk.Tk):
         frm.columnconfigure(1, weight=1)
 
         self.batch_clubs = tk.StringVar(value=str(self.fmdata_dir / "master_library.csv"))
-        self.batch_first = tk.StringVar(value=str(self.fmdata_dir / "scottish_male_first_names_2500.csv"))
-        self.batch_surn = tk.StringVar(value=str(self.fmdata_dir / "scottish_surnames_2500.csv"))
+        self.batch_first = tk.StringVar(value=str(self.fmdata_dir / "male_first_names.csv"))
+        self.batch_female_first = tk.StringVar(value=str(self.fmdata_dir / "female_first_names.csv"))
+        self.batch_common_names = tk.StringVar(value=str(self.fmdata_dir / "common_names.csv"))
+        self.batch_surn = tk.StringVar(value=str(self.fmdata_dir / "surnames.csv"))
         self.batch_out = tk.StringVar(value=str(self.fmdata_dir / "fm26_players.xml"))
         self.batch_script = tk.StringVar(value=str(self.fmdata_dir / DEFAULT_GENERATE_SCRIPT))
 
@@ -2089,11 +2331,13 @@ class App(tk.Tk):
                 ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
 
         row_file(0, "master_library.csv:", self.batch_clubs, is_save=False)
-        row_file(1, "First names CSV:", self.batch_first, is_save=False)
-        row_file(2, "Surnames CSV:", self.batch_surn, is_save=False)
-        row_file(3, "Output XML:", self.batch_out, is_save=True)
-        row_file(4, "Generator script:", self.batch_script, is_save=False)
-        row_file(5, "Region mapping CSV (placeholder):", self.batch_region_map_csv, is_save=False)
+        row_file(1, "Male first names CSV:", self.batch_first, is_save=False)
+        row_file(2, "Female first names CSV:", self.batch_female_first, is_save=False)
+        row_file(3, "Common names CSV:", self.batch_common_names, is_save=False)
+        row_file(4, "Surnames CSV:", self.batch_surn, is_save=False)
+        row_file(5, "Output XML:", self.batch_out, is_save=True)
+        row_file(6, "Generator script:", self.batch_script, is_save=False)
+        row_file(7, "Region mapping CSV (placeholder):", self.batch_region_map_csv, is_save=False)
 
         opt = ttk.LabelFrame(frm, text="Batch options")
         opt.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
@@ -2117,44 +2361,6 @@ class App(tk.Tk):
 
         btnrow = ttk.Frame(opt)
         btnrow.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
-
-
-        # DOB options
-        dob = ttk.LabelFrame(frm, text="DOB (Calendar range OR fixed)")
-        dob.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
-        dob.columnconfigure(3, weight=1)
-
-        ttk.Radiobutton(dob, text="Use DOB range", variable=self.batch_dob_mode, value="range").grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(dob, text="Use fixed DOB (same for all)", variable=self.batch_dob_mode, value="fixed").grid(row=0, column=1, sticky="w", padx=8, pady=6)
-
-        ttk.Label(dob, text="Fixed DOB").grid(row=1, column=0, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.batch_dob_fixed).grid(row=1, column=1, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="Start").grid(row=2, column=0, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.batch_dob_start).grid(row=2, column=1, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="End").grid(row=2, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.batch_dob_end).grid(row=2, column=3, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="Age range controls moved to Details tab.", foreground="#444").grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(2, 6))
-
-        ttk.Separator(dob, orient="horizontal").grid(row=4, column=0, columnspan=4, sticky="ew", padx=8, pady=(2, 6))
-        ttk.Label(dob, text="XML date overrides (optional)").grid(row=5, column=0, columnspan=4, sticky="w", padx=8, pady=(0, 4))
-
-        ttk.Label(dob, text="Date moved to nation").grid(row=6, column=0, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Use DOB", variable=self.batch_moved_to_nation_mode, value="dob").grid(row=6, column=1, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Fixed date", variable=self.batch_moved_to_nation_mode, value="fixed").grid(row=6, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.batch_moved_to_nation_date).grid(row=6, column=3, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="Date joined club").grid(row=7, column=0, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Auto (1 Jul base year)", variable=self.batch_joined_club_mode, value="auto").grid(row=7, column=1, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Fixed date", variable=self.batch_joined_club_mode, value="fixed").grid(row=7, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.batch_joined_club_date).grid(row=7, column=3, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="Contract expires").grid(row=8, column=0, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Auto (+3 years)", variable=self.batch_contract_expires_mode, value="auto").grid(row=8, column=1, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Fixed date", variable=self.batch_contract_expires_mode, value="fixed").grid(row=8, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.batch_contract_expires_date).grid(row=8, column=3, sticky="w", padx=8, pady=4)
 
         # Height + feet (shared builder)
         self._add_height_feet_section(
@@ -2218,7 +2424,7 @@ class App(tk.Tk):
         ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
 
         # Club / City / Nation selection
-        sel = ttk.LabelFrame(frm, text="Club / City / Nation")
+        sel = ttk.LabelFrame(frm, text="Club")
         sel.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         sel.columnconfigure(3, weight=1)
 
@@ -2234,24 +2440,15 @@ class App(tk.Tk):
         club_combo = ttk.Combobox(sel, textvariable=self.batch_club_sel, values=[], state="disabled", width=55)
         club_combo.grid(row=0, column=3, sticky="ew", padx=8, pady=6)
         self.batch_club_combo = club_combo
+        self.batch_club_gender_filter = tk.StringVar(value="Any")
+        ttk.Label(sel, text="Club filter").grid(row=0, column=4, sticky="e", padx=(8, 4), pady=6)
+        self.batch_club_filter_combo = ttk.Combobox(sel, textvariable=self.batch_club_gender_filter, values=["Any", "Male", "Female"], state="readonly", width=8)
+        self.batch_club_filter_combo.grid(row=0, column=5, sticky="w", padx=(0, 8), pady=6)
+        self.batch_club_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_club_filter('batch'))
         ttk.Radiobutton(sel, text="Random", variable=self.batch_club_mode, value="random", command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(sel, text="Fixed", variable=self.batch_club_mode, value="fixed", command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
 
-        ttk.Label(sel, text="City of birth").grid(row=1, column=0, sticky="w", padx=8, pady=6)
-        city_combo = ttk.Combobox(sel, textvariable=self.batch_city_sel, values=[], state="disabled", width=55)
-        city_combo.grid(row=1, column=3, sticky="ew", padx=8, pady=6)
-        self.batch_city_combo = city_combo
-        ttk.Radiobutton(sel, text="Random", variable=self.batch_city_mode, value="random", command=lambda mv=self.batch_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=1, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_city_mode, value="fixed", command=lambda mv=self.batch_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=2, sticky="w", padx=8, pady=6)
-
-        ttk.Label(sel, text="Nation").grid(row=2, column=0, sticky="w", padx=8, pady=6)
-        nation_combo = ttk.Combobox(sel, textvariable=self.batch_nation_sel, values=[], state="disabled", width=55)
-        nation_combo.grid(row=2, column=3, sticky="ew", padx=8, pady=6)
-        self.batch_nation_combo = nation_combo
-        ttk.Radiobutton(sel, text="Random", variable=self.batch_nation_mode, value="random", command=lambda mv=self.batch_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=1, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_nation_mode, value="fixed", command=lambda mv=self.batch_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=2, sticky="w", padx=8, pady=6)
-
-        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(4, 8))
+        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
 
         # Positions
         pos = ttk.LabelFrame(frm, text="Positions")
@@ -2367,8 +2564,10 @@ class App(tk.Tk):
         frm.columnconfigure(1, weight=1)
 
         self.single_clubs = tk.StringVar(value=str(self.fmdata_dir / "master_library.csv"))
-        self.single_first = tk.StringVar(value=str(self.fmdata_dir / "scottish_male_first_names_2500.csv"))
-        self.single_surn = tk.StringVar(value=str(self.fmdata_dir / "scottish_surnames_2500.csv"))
+        self.single_first = tk.StringVar(value=str(self.fmdata_dir / "male_first_names.csv"))
+        self.single_female_first = tk.StringVar(value=str(self.fmdata_dir / "female_first_names.csv"))
+        self.single_common_names = tk.StringVar(value=str(self.fmdata_dir / "common_names.csv"))
+        self.single_surn = tk.StringVar(value=str(self.fmdata_dir / "surnames.csv"))
         self.single_out = tk.StringVar(value=str(self.fmdata_dir / "fm26_single_player.xml"))
         self.single_script = tk.StringVar(value=str(self.fmdata_dir / DEFAULT_GENERATE_SCRIPT))
 
@@ -2451,11 +2650,13 @@ class App(tk.Tk):
                 ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
 
         row_file(0, "master_library.csv:", self.single_clubs, is_save=False)
-        row_file(1, "First names CSV:", self.single_first, is_save=False)
-        row_file(2, "Surnames CSV:", self.single_surn, is_save=False)
-        row_file(3, "Output XML:", self.single_out, is_save=True)
-        row_file(4, "Generator script:", self.single_script, is_save=False)
-        row_file(5, "Region mapping CSV (placeholder):", self.single_region_map_csv, is_save=False)
+        row_file(1, "Male first names CSV:", self.single_first, is_save=False)
+        row_file(2, "Female first names CSV:", self.single_female_first, is_save=False)
+        row_file(3, "Common names CSV:", self.single_common_names, is_save=False)
+        row_file(4, "Surnames CSV:", self.single_surn, is_save=False)
+        row_file(5, "Output XML:", self.single_out, is_save=True)
+        row_file(6, "Generator script:", self.single_script, is_save=False)
+        row_file(7, "Region mapping CSV (placeholder):", self.single_region_map_csv, is_save=False)
 
         opt = ttk.LabelFrame(frm, text="Single player (fixed values)")
         opt.grid(row=1, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
@@ -2487,52 +2688,6 @@ class App(tk.Tk):
 
         btnrow = ttk.Frame(opt)
         btnrow.grid(row=4, column=0, columnspan=8, sticky="w", padx=6, pady=(0, 6))
-
-
-        # Age / DOB
-        dob = ttk.LabelFrame(frm, text="Age / DOB")
-        dob.grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
-        dob.columnconfigure(3, weight=1)
-
-        ttk.Radiobutton(dob, text="Use age", variable=self.single_dob_mode, value="age").grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        ttk.Label(dob, text="Age").grid(row=0, column=1, sticky="w", padx=8, pady=6)
-        ttk.Entry(dob, textvariable=self.single_age, width=6).grid(row=0, column=2, sticky="w", padx=8, pady=6)
-
-        ttk.Radiobutton(dob, text="Use DOB", variable=self.single_dob_mode, value="dob").grid(row=1, column=0, sticky="w", padx=8, pady=6)
-        ttk.Label(dob, text="DOB").grid(row=1, column=1, sticky="w", padx=8, pady=6)
-        self._make_date_input(dob, self.single_dob).grid(row=1, column=2, sticky="w", padx=8, pady=6)
-        ttk.Label(dob, textvariable=self.single_age_preview, foreground="#444").grid(row=1, column=3, sticky="w", padx=8, pady=6)
-
-        def _update_age_preview(*_):
-            try:
-                by = int(self.single_base_year.get().strip() or "2026")
-                y = int(self.single_dob.get().strip()[:4])
-                a = max(0, by - y)
-                self.single_age_preview.set(f"Age (from DOB): {a}")
-            except Exception:
-                self.single_age_preview.set("Age (from DOB): ?")
-
-        self.single_dob.trace_add("write", _update_age_preview)
-        self.single_base_year.trace_add("write", _update_age_preview)
-        _update_age_preview()
-
-        ttk.Separator(dob, orient="horizontal").grid(row=2, column=0, columnspan=4, sticky="ew", padx=8, pady=(2, 6))
-        ttk.Label(dob, text="XML date overrides (optional)").grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(0, 4))
-
-        ttk.Label(dob, text="Date moved to nation").grid(row=4, column=0, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Use DOB", variable=self.single_moved_to_nation_mode, value="dob").grid(row=4, column=1, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Fixed date", variable=self.single_moved_to_nation_mode, value="fixed").grid(row=4, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.single_moved_to_nation_date).grid(row=4, column=3, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="Date joined club").grid(row=5, column=0, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Auto (1 Jul base year)", variable=self.single_joined_club_mode, value="auto").grid(row=5, column=1, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Fixed date", variable=self.single_joined_club_mode, value="fixed").grid(row=5, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.single_joined_club_date).grid(row=5, column=3, sticky="w", padx=8, pady=4)
-
-        ttk.Label(dob, text="Contract expires").grid(row=6, column=0, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Auto (+3 years)", variable=self.single_contract_expires_mode, value="auto").grid(row=6, column=1, sticky="w", padx=8, pady=4)
-        ttk.Radiobutton(dob, text="Fixed date", variable=self.single_contract_expires_mode, value="fixed").grid(row=6, column=2, sticky="w", padx=8, pady=4)
-        self._make_date_input(dob, self.single_contract_expires_date).grid(row=6, column=3, sticky="w", padx=8, pady=4)
 
         # Height + feet (shared builder)
         self._add_height_feet_section(
@@ -2593,7 +2748,7 @@ class App(tk.Tk):
         ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
 
         # Club / City / Nation selection
-        sel = ttk.LabelFrame(frm, text="Club / City / Nation")
+        sel = ttk.LabelFrame(frm, text="Club")
         sel.grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         sel.columnconfigure(3, weight=1)
 
@@ -2609,24 +2764,15 @@ class App(tk.Tk):
         club_combo = ttk.Combobox(sel, textvariable=self.single_club_sel, values=[], state="disabled", width=55)
         club_combo.grid(row=0, column=3, sticky="ew", padx=8, pady=6)
         self.single_club_combo = club_combo
+        self.single_club_gender_filter = tk.StringVar(value="Any")
+        ttk.Label(sel, text="Club filter").grid(row=0, column=4, sticky="e", padx=(8, 4), pady=6)
+        self.single_club_filter_combo = ttk.Combobox(sel, textvariable=self.single_club_gender_filter, values=["Any", "Male", "Female"], state="readonly", width=8)
+        self.single_club_filter_combo.grid(row=0, column=5, sticky="w", padx=(0, 8), pady=6)
+        self.single_club_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_club_filter('single'))
         ttk.Radiobutton(sel, text="Random", variable=self.single_club_mode, value="random", command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(sel, text="Fixed", variable=self.single_club_mode, value="fixed", command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
 
-        ttk.Label(sel, text="City of birth").grid(row=1, column=0, sticky="w", padx=8, pady=6)
-        city_combo = ttk.Combobox(sel, textvariable=self.single_city_sel, values=[], state="disabled", width=55)
-        city_combo.grid(row=1, column=3, sticky="ew", padx=8, pady=6)
-        self.single_city_combo = city_combo
-        ttk.Radiobutton(sel, text="Random", variable=self.single_city_mode, value="random", command=lambda mv=self.single_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=1, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(sel, text="Fixed", variable=self.single_city_mode, value="fixed", command=lambda mv=self.single_city_mode, cb=city_combo: self._combo_state_for_mode(mv, cb)).grid(row=1, column=2, sticky="w", padx=8, pady=6)
-
-        ttk.Label(sel, text="Nation").grid(row=2, column=0, sticky="w", padx=8, pady=6)
-        nation_combo = ttk.Combobox(sel, textvariable=self.single_nation_sel, values=[], state="disabled", width=55)
-        nation_combo.grid(row=2, column=3, sticky="ew", padx=8, pady=6)
-        self.single_nation_combo = nation_combo
-        ttk.Radiobutton(sel, text="Random", variable=self.single_nation_mode, value="random", command=lambda mv=self.single_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=1, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(sel, text="Fixed", variable=self.single_nation_mode, value="fixed", command=lambda mv=self.single_nation_mode, cb=nation_combo: self._combo_state_for_mode(mv, cb)).grid(row=2, column=2, sticky="w", padx=8, pady=6)
-
-        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=3, column=0, columnspan=4, sticky="w", padx=8, pady=(4, 8))
+        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
 
         # Positions
         pos = ttk.LabelFrame(frm, text="Positions")
@@ -2757,6 +2903,33 @@ class App(tk.Tk):
                         self._log(f"[WARN] Auto-reload master_library.csv failed: {e}\n")
                     except Exception:
                         pass
+
+
+    def _resolve_gui_file_candidate(self, p: str, *, script_hint: str = "") -> str:
+        raw = (p or "").strip()
+        if not raw:
+            return raw
+        if os.path.exists(raw):
+            return raw
+        candidates = []
+        try:
+            if script_hint:
+                sd = str(Path(script_hint).resolve().parent)
+                candidates.append(str(Path(sd) / raw))
+                candidates.append(str(Path(sd) / "fmdata" / raw))
+        except Exception:
+            pass
+        try:
+            fm_dir = detect_fm_editor_data_dir()
+            if fm_dir:
+                candidates.append(str(Path(fm_dir) / raw))
+                candidates.append(str(Path(fm_dir) / "fmdata" / raw))
+        except Exception:
+            pass
+        for c in candidates:
+            if c and os.path.exists(c):
+                return c
+        return raw
 
     def _pick_save_xml(self, var: tk.StringVar) -> None:
         p = filedialog.asksaveasfilename(
@@ -3008,7 +3181,7 @@ class App(tk.Tk):
         if tv_mode == "fixed":
             tv = self.batch_tv_fixed.get().strip()
             if not tv:
-                messagebox.showerror("Transfer value missing", "Transfer mode is Fixed, but value is blank.")
+                messagebox.showerror("Transfer value missing", "Transfer value mode is Fixed, but value is blank.")
                 return
             extra.extend(["--transfer_value", tv])
         elif tv_mode == "range":
@@ -3034,7 +3207,7 @@ class App(tk.Tk):
                 gval = self.batch_details_gender_value.get().strip()
                 if gval:
                     try:
-                        gv = _details_gender_to_int(gval)
+                        gv = self._details_gender_to_int(gval)
                     except Exception as e:
                         messagebox.showerror("Gender", str(e))
                         return
@@ -3045,7 +3218,7 @@ class App(tk.Tk):
                 eval_ = self.batch_details_ethnicity_value.get().strip()
                 if eval_:
                     try:
-                        ev = _details_ethnicity_to_int(eval_)
+                        ev = self._details_ethnicity_to_int(eval_)
                     except Exception as e:
                         messagebox.showerror("Ethnicity", str(e))
                         return
@@ -3167,6 +3340,8 @@ class App(tk.Tk):
             script_path=self.batch_script.get().strip(),
             clubs=self.batch_clubs.get().strip(),
             first=self.batch_first.get().strip(),
+            female_first=self.batch_female_first.get().strip(),
+            common_names=self.batch_common_names.get().strip(),
             surn=self.batch_surn.get().strip(),
             out_path=self.batch_out.get().strip(),
             count=self.batch_count.get().strip(),
@@ -3379,7 +3554,7 @@ class App(tk.Tk):
         if tv_mode == "fixed":
             tv = self.single_tv_fixed.get().strip()
             if not tv:
-                messagebox.showerror("Transfer value missing", "Transfer mode is Fixed, but value is blank.")
+                messagebox.showerror("Transfer value missing", "Transfer value mode is Fixed, but value is blank.")
                 return
             extra.extend(["--transfer_value", tv])
         elif tv_mode == "range":
@@ -3405,7 +3580,7 @@ class App(tk.Tk):
                 gval = self.single_details_gender_value.get().strip()
                 if gval:
                     try:
-                        gv = _details_gender_to_int(gval)
+                        gv = self._details_gender_to_int(gval)
                     except Exception as e:
                         messagebox.showerror("Gender", str(e))
                         return
@@ -3416,7 +3591,7 @@ class App(tk.Tk):
                 eval_ = self.single_details_ethnicity_value.get().strip()
                 if eval_:
                     try:
-                        ev = _details_ethnicity_to_int(eval_)
+                        ev = self._details_ethnicity_to_int(eval_)
                     except Exception as e:
                         messagebox.showerror("Ethnicity", str(e))
                         return
@@ -3539,6 +3714,8 @@ class App(tk.Tk):
             script_path=self.single_script.get().strip(),
             clubs=self.single_clubs.get().strip(),
             first=self.single_first.get().strip(),
+            female_first=self.single_female_first.get().strip(),
+            common_names=self.single_common_names.get().strip(),
             surn=self.single_surn.get().strip(),
             out_path=self.single_out.get().strip(),
             count="1",
@@ -3561,6 +3738,8 @@ class App(tk.Tk):
         script_path: str,
         clubs: str,
         first: str,
+        female_first: str,
+        common_names: str,
         surn: str,
         out_path: str,
         count: str,
@@ -3594,6 +3773,10 @@ class App(tk.Tk):
 
         if (not has_manual_first) and (not must_exist(first, "first names")):
             return
+        if female_first and (not must_exist(female_first, "female first names")):
+            return
+        if common_names and (not must_exist(common_names, "common names")):
+            return
         if (not has_manual_second) and (not must_exist(surn, "surnames")):
             return
         if not out_path:
@@ -3622,6 +3805,10 @@ class App(tk.Tk):
             "--pa_max", pa_max,
             "--base_year", base_year,
         ]
+        if female_first:
+            cmd.extend(["--female_first_names", female_first])
+        if common_names:
+            cmd.extend(["--common_names", common_names])
         if seed:
             cmd.extend(["--seed", seed])
         if extra_args:
@@ -3921,6 +4108,22 @@ class App(tk.Tk):
 
         must_create = None if self.appender_dry_run.get() else (out_xml or target)
         self._run_async_stream("XML Appender", cmd, must_create=must_create)
+
+
+# Backward-compat safety: some builds scheduled self._cleanup_other_tabs_fields() in App.__init__
+# but the helper was not present in the class. Add a no-throw implementation here.
+def _app_cleanup_other_tabs_fields(self):
+    """Best-effort UI cleanup hook for duplicate fields on 'Other' tabs.
+    Safe no-op if widgets/attributes are not present in this build."""
+    try:
+        # Optional future cleanup logic can live here.
+        return
+    except Exception:
+        return
+
+if not hasattr(App, "_cleanup_other_tabs_fields"):
+    App._cleanup_other_tabs_fields = _app_cleanup_other_tabs_fields
+
 
 def main() -> int:
     try:
