@@ -87,6 +87,29 @@ def ensure_parent_dir(file_path: str) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _preferred_name_csv_path(fmdata_dir: Path, stem: str) -> str:
+    """
+    Prefer weighted/frequency CSV packs when present, with clean fallback to legacy names.
+    Examples for stem='male_first_names':
+      - male_first_names_5n_v3_weightfreq.csv
+      - male_first_names_v3_weightfreq.csv
+      - male_first_names.csv
+    """
+    base = Path(fmdata_dir)
+    candidates = [
+        base / f"{stem}_5n_v3_weightfreq.csv",
+        base / f"{stem}_v3_weightfreq.csv",
+        base / f"{stem}.csv",
+    ]
+    for p in candidates:
+        try:
+            if p.exists():
+                return str(p)
+        except Exception:
+            pass
+    return str(candidates[-1])
+
+
 @dataclass
 class StreamResult:
     rc: int
@@ -310,16 +333,20 @@ class App(tk.Tk):
         self.player_batch_notebook.pack(fill="both", expand=True)
         self.batch_tab = ttk.Frame(self.player_batch_notebook)           # Other
         self.batch_details_tab = ttk.Frame(self.player_batch_notebook)   # Details
+        self.batch_international_tab = ttk.Frame(self.player_batch_notebook)  # International Data
         self.player_batch_notebook.add(self.batch_tab, text="Other")
         self.player_batch_notebook.add(self.batch_details_tab, text="Details")
+        self.player_batch_notebook.add(self.batch_international_tab, text="International Data")
 
-        # Player > Single Person -> Other / Details
+        # Player > Single Person -> Other / Details / International Data
         self.player_single_notebook = ttk.Notebook(self.player_single_parent)
         self.player_single_notebook.pack(fill="both", expand=True)
         self.single_tab = ttk.Frame(self.player_single_notebook)         # Other
         self.single_details_tab = ttk.Frame(self.player_single_notebook) # Details
+        self.single_international_tab = ttk.Frame(self.player_single_notebook) # International Data
         self.player_single_notebook.add(self.single_tab, text="Other")
         self.player_single_notebook.add(self.single_details_tab, text="Details")
+        self.player_single_notebook.add(self.single_international_tab, text="International Data")
 
         # Non-player scaffolding tabs (requested layout)
         self.nonplayer_modes_notebook = ttk.Notebook(self.nonplayer_people_tab)
@@ -387,6 +414,22 @@ class App(tk.Tk):
         single_details_holder.pack(side="top", fill="both", expand=True)
         self.single_details_body = self._make_scrollable(single_details_holder)
 
+        self.batch_international_actionbar = ttk.Frame(self.batch_international_tab)
+        self.batch_international_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        ttk.Button(self.batch_international_actionbar, text="Run Batch Generator", command=self._run_batch_generator_safe).pack(side="left")
+
+        batch_international_holder = ttk.Frame(self.batch_international_tab)
+        batch_international_holder.pack(side="top", fill="both", expand=True)
+        self.batch_international_body = self._make_scrollable(batch_international_holder)
+
+        self.single_international_actionbar = ttk.Frame(self.single_international_tab)
+        self.single_international_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        ttk.Button(self.single_international_actionbar, text="Generate 1 Player", command=self._run_single_generator_safe).pack(side="left")
+
+        single_international_holder = ttk.Frame(self.single_international_tab)
+        single_international_holder.pack(side="top", fill="both", expand=True)
+        self.single_international_body = self._make_scrollable(single_international_holder)
+
         # Top-level XML Appender (moved next to Library Extractor)
         self.appender_actionbar = ttk.Frame(self.appender_tab)
         self.appender_actionbar.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
@@ -423,6 +466,8 @@ class App(tk.Tk):
         self._build_single_tab()
         self._build_batch_details_tab()
         self._build_single_details_tab()
+        self._build_batch_international_tab()
+        self._build_single_international_tab()
         self._build_appender_tab()
         self._init_batch_single_file_sync()
         self.after(200, self._reload_master_library)
@@ -492,8 +537,10 @@ class App(tk.Tk):
         for fr in (
             getattr(self, "batch_paths_frame", None),
             getattr(self, "batch_details_paths_frame", None),
+            getattr(self, "batch_international_paths_frame", None),
             getattr(self, "single_paths_frame", None),
             getattr(self, "single_details_paths_frame", None),
+            getattr(self, "single_international_paths_frame", None),
             getattr(self, "appender_paths_frame", None),
         ):
             if fr is None:
@@ -630,6 +677,7 @@ class App(tk.Tk):
         left_foot_var: tk.StringVar,
         right_foot_var: tk.StringVar,
         show_height: bool = True,
+        feet_none_var: tk.BooleanVar | None = None,
     ) -> None:
         hf = ttk.LabelFrame(parent, text=("Height + Feet" if show_height else "Feet"))
         hf.grid(row=row, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
@@ -656,10 +704,20 @@ class App(tk.Tk):
 
         # Feet mode
         ttk.Label(hf, text="Feet").grid(row=feet_row0, column=0, sticky="w", padx=8, pady=6)
-        ttk.Combobox(hf, textvariable=feet_mode_var, values=["random", "left_only", "left", "right_only", "right", "both"], width=14, state="readonly").grid(row=feet_row0, column=1, sticky="w", padx=8, pady=6)
+        feet_combo = ttk.Combobox(hf, textvariable=feet_mode_var, values=["random", "left_only", "left", "right_only", "right", "both"], width=14, state="readonly")
+        feet_combo.grid(row=feet_row0, column=1, sticky="w", padx=8, pady=6)
+
+        if feet_none_var is not None:
+            ttk.Checkbutton(hf, text="Don't set", variable=feet_none_var).grid(row=feet_row0, column=2, sticky="w", padx=8, pady=6)
+            _feet_override_col = 3
+            _feet_override_span = 2
+        else:
+            _feet_override_col = 2
+            _feet_override_span = 3
 
         # Feet override
-        ttk.Checkbutton(hf, text="Override foot ratings (1–20)", variable=feet_override_var).grid(row=feet_row0, column=2, columnspan=3, sticky="w", padx=8, pady=6)
+        feet_override_chk = ttk.Checkbutton(hf, text="Override foot ratings (1–20)", variable=feet_override_var)
+        feet_override_chk.grid(row=feet_row0, column=_feet_override_col, columnspan=_feet_override_span, sticky="w", padx=8, pady=6)
 
         ttk.Label(hf, text="Left").grid(row=feet_row0 + 1, column=0, sticky="w", padx=8, pady=4)
         left_spin = ttk.Spinbox(hf, from_=1, to=20, textvariable=left_foot_var, width=6)
@@ -678,7 +736,16 @@ class App(tk.Tk):
                 return default
 
         def _set_state():
-            state = ("normal" if feet_override_var.get() else "disabled")
+            feet_disabled = bool(feet_none_var.get()) if feet_none_var is not None else False
+            try:
+                feet_combo.configure(state=("disabled" if feet_disabled else "readonly"))
+            except Exception:
+                pass
+            try:
+                feet_override_chk.configure(state=("disabled" if feet_disabled else "normal"))
+            except Exception:
+                pass
+            state = ("normal" if (feet_override_var.get() and not feet_disabled) else "disabled")
             try:
                 left_spin.configure(state=state)
                 right_spin.configure(state=state)
@@ -686,8 +753,8 @@ class App(tk.Tk):
                 pass
 
         def _enforce_one_20(*_):
-            # Only enforce when override is ON
-            if not feet_override_var.get():
+            # Only enforce when override is ON and feet are not omitted
+            if (feet_none_var is not None and bool(feet_none_var.get())) or (not feet_override_var.get()):
                 _set_state()
                 return
 
@@ -724,6 +791,11 @@ class App(tk.Tk):
         feet_mode_var.trace_add("write", _enforce_one_20)
         left_foot_var.trace_add("write", _enforce_one_20)
         right_foot_var.trace_add("write", _enforce_one_20)
+        if feet_none_var is not None:
+            try:
+                feet_none_var.trace_add("write", _enforce_one_20)
+            except Exception:
+                pass
         _enforce_one_20()
 
     # ---------------- Details (Random / Custom) ----------------
@@ -1001,12 +1073,15 @@ class App(tk.Tk):
             ttk.Label(detailsf, text=label).grid(row=r, column=0, sticky="w", padx=6, pady=3)
             rb_rand = ttk.Radiobutton(detailsf, text="Random", variable=mode_var, value="random")
             rb_custom = ttk.Radiobutton(detailsf, text="Custom", variable=mode_var, value="custom")
+            rb_none = ttk.Radiobutton(detailsf, text="Don\'t set", variable=mode_var, value="none")
             rb_rand.grid(row=r, column=1, sticky="w", padx=(6, 2))
             rb_custom.grid(row=r, column=1, sticky="w", padx=(85, 2))
+            rb_none.grid(row=r, column=1, sticky="w", padx=(165, 2))
 
             if kind == "disabled":
                 rb_rand.configure(state="disabled")
                 rb_custom.configure(state="disabled")
+                rb_none.configure(state="disabled")
                 w = ttk.Entry(detailsf, textvariable=value_var, state="disabled")
                 w.grid(row=r, column=2, sticky="ew", padx=6, pady=3)
                 r += 1
@@ -1111,18 +1186,7 @@ class App(tk.Tk):
         ttk.Label(editf, text="Nationality Info").grid(row=0, column=2, sticky="w", padx=(0, 6), pady=3)
         sn_nat_info_picker = self._make_searchable_picker(editf, sn_nat_info_var, list(_nat_info_labels), width=34)
         sn_nat_info_picker.grid(row=0, column=3, sticky="ew", padx=(0, 10), pady=3)
-
-        sn_int_ret_chk = ttk.Checkbutton(editf, text="International Retirement", variable=sn_int_ret_var)
-        sn_int_ret_chk.grid(row=1, column=0, columnspan=2, sticky="w", pady=3)
-
-        ttk.Label(editf, text="International Retirement Date").grid(row=1, column=2, sticky="w", padx=(0, 6), pady=3)
-        sn_int_ret_date_entry = ttk.Entry(editf, textvariable=sn_int_ret_date_var, width=16)
-        sn_int_ret_date_entry.grid(row=1, column=3, sticky="w", pady=3)
-        sn_int_ret_date_btn = ttk.Button(editf, text="📅", width=3, command=lambda v=sn_int_ret_date_var: self._open_calendar(v))
-        sn_int_ret_date_btn.grid(row=1, column=4, sticky="w", padx=(4, 0), pady=3)
-
-        sn_retire_spell_chk = ttk.Checkbutton(editf, text="Retiring After Spell At Current Club", variable=sn_retire_spell_var)
-        sn_retire_spell_chk.grid(row=2, column=0, columnspan=4, sticky="w", pady=(3, 1))
+        # International retirement controls are shown in a separate section below.
 
         # Comment is stored but kept compact/hidden from the layout; Add Comment button marks selected item.
         _sn_syncing = {"on": False}
@@ -1344,12 +1408,12 @@ class App(tk.Tk):
         if dy_value_var is None:
             dy_value_var = tk.StringVar(value="")
             setattr(self, f"{prefix}_details_declared_for_youth_nation_value", dy_value_var)
-
         ttk.Radiobutton(dyf, text="Random", variable=dy_mode_var, value="random").grid(row=0, column=0, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(dyf, text="Custom", variable=dy_mode_var, value="custom").grid(row=0, column=1, sticky="w", padx=8, pady=6)
-        ttk.Label(dyf, text="Nation").grid(row=0, column=2, sticky="e", padx=(10, 6), pady=6)
+        ttk.Radiobutton(dyf, text="Don't set", variable=dy_mode_var, value="none").grid(row=0, column=2, sticky="w", padx=8, pady=6)
+        ttk.Label(dyf, text="Nation").grid(row=0, column=3, sticky="e", padx=(10, 6), pady=6)
         dy_picker = self._make_searchable_picker(dyf, dy_value_var, _sn_nation_labels, width=34)
-        dy_picker.grid(row=0, column=3, sticky="ew", padx=(0, 8), pady=6)
+        dy_picker.grid(row=0, column=4, sticky="ew", padx=(0, 8), pady=6)
 
         try:
             self._bind_mode_enable(dy_mode_var, "custom", [dy_picker], clear_on_random=False)
@@ -1358,10 +1422,31 @@ class App(tk.Tk):
 
         r += 1
 
+        # International Retirement (separate from Second Nations editor)
+        irf = ttk.LabelFrame(detailsf, text="International Retirement")
+        irf.grid(row=r, column=0, columnspan=3, sticky="ew", padx=6, pady=(8, 4))
+        for _c in range(5):
+            irf.columnconfigure(_c, weight=1 if _c == 3 else 0)
+
+        ttk.Checkbutton(irf, text="International Retirement", variable=sn_int_ret_var).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=6
+        )
+        ttk.Label(irf, text="International Retirement Date").grid(row=0, column=2, sticky="e", padx=(10, 6), pady=6)
+        sn_int_ret_date_entry = ttk.Entry(irf, textvariable=sn_int_ret_date_var, width=16)
+        sn_int_ret_date_entry.grid(row=0, column=3, sticky="w", pady=6)
+        sn_int_ret_date_btn = ttk.Button(irf, text="📅", width=3, command=lambda v=sn_int_ret_date_var: self._open_calendar(v))
+        sn_int_ret_date_btn.grid(row=0, column=4, sticky="w", padx=(4, 8), pady=6)
+
+        ttk.Checkbutton(irf, text="Retiring After Spell At Current Club", variable=sn_retire_spell_var).grid(
+            row=1, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 6)
+        )
+
+        r += 1
+
         # Height block in Details (same layout style as Other tab height controls)
         hbox = ttk.LabelFrame(detailsf, text="Height")
         hbox.grid(row=r, column=0, columnspan=3, sticky="ew", padx=6, pady=(8, 4))
-        for c in range(6):
+        for c in range(7):
             hbox.columnconfigure(c, weight=0)
 
         # New preferred Details height vars (kept separate from legacy details_height_mode/value)
@@ -1387,6 +1472,7 @@ class App(tk.Tk):
             setattr(self, f"{prefix}_details_height_fixed", h_fixed_var)
 
         ttk.Radiobutton(hbox, text="Random height range", variable=h_mode_var, value="range").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(hbox, text="Don't set", variable=h_mode_var, value="none").grid(row=0, column=2, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(hbox, text="Fixed height", variable=h_mode_var, value="fixed").grid(row=0, column=4, sticky="w", padx=8, pady=6)
 
         ttk.Label(hbox, text="Min").grid(row=1, column=0, sticky="e", padx=(8, 2), pady=4)
@@ -1400,7 +1486,7 @@ class App(tk.Tk):
         h_fixed_entry.grid(row=1, column=5, sticky="w", padx=8, pady=4)
 
         def _refresh_details_height_mode(*_):
-            mode = (h_mode_var.get() or "range").strip()
+            mode = (h_mode_var.get() or "range").strip().lower()
             range_state = "normal" if mode == "range" else "disabled"
             fixed_state = "normal" if mode == "fixed" else "disabled"
             for w in (h_min_entry, h_max_entry):
@@ -1423,7 +1509,7 @@ class App(tk.Tk):
         # Compact DOB block in Details (uses main batch/single DOB vars)
         dobf = ttk.LabelFrame(detailsf, text="DOB (Age range / DOB range / Fixed)")
         dobf.grid(row=r, column=0, columnspan=3, sticky="ew", padx=6, pady=(8, 4))
-        for c in range(10):
+        for c in range(11):
             dobf.columnconfigure(c, weight=0)
 
         mode_var = getattr(self, f"{prefix}_dob_mode")
@@ -1482,6 +1568,7 @@ class App(tk.Tk):
         end_btn.grid(row=1, column=7, sticky="w", padx=(4, 12), pady=(2, 6))
 
         ttk.Radiobutton(dobf, text="DOB Fix", variable=mode_var, value=dob_fixed_value).grid(row=0, column=8, sticky="w", padx=(0, 8), pady=(6, 2))
+        ttk.Radiobutton(dobf, text="Don\'t set", variable=mode_var, value="none").grid(row=0, column=10, sticky="w", padx=(12, 6), pady=(6, 2))
         ttk.Label(dobf, text="Date").grid(row=0, column=9, sticky="w", padx=(0, 4), pady=(6, 2))
         fixed_entry = ttk.Entry(dobf, textvariable=dob_fixed_var, width=12)
         fixed_entry.grid(row=1, column=8, sticky="w", padx=(0, 4), pady=(2, 6))
@@ -1489,7 +1576,7 @@ class App(tk.Tk):
         fixed_btn.grid(row=1, column=9, sticky="w", pady=(2, 6))
 
         def _refresh_dob_mode(*_):
-            mode = (mode_var.get() or "age").strip()
+            mode = (mode_var.get() or "age").strip().lower()
             age_state = "normal" if mode == "age" else "disabled"
             range_state = "normal" if mode == dob_range_value else "disabled"
             fixed_state = "normal" if mode == dob_fixed_value else "disabled"
@@ -2135,6 +2222,399 @@ class App(tk.Tk):
 
     # ---------------- Extractor UI ----------------
 
+
+    def _add_international_caps_list(self, parent, row: int, prefix: str, list_key: str, title: str, apps_label: str, goals_label: str):
+        """Reusable list editor for Other Nation Caps / Other Nation Youth Caps."""
+        box = ttk.LabelFrame(parent, text=title)
+        box.grid(row=row, column=0, sticky="ew", padx=8, pady=(0, 8))
+        box.columnconfigure(0, weight=1)
+
+        nation_rows = list(self._load_master_library_rows(kind="nation"))
+        nation_labels = [x.get("nation_name") or x.get("name") or "" for x in nation_rows]
+        nation_labels = [x for x in nation_labels if x]
+
+        items_attr = f"{prefix}_{list_key}_items"
+        clip_attr = f"{prefix}_{list_key}_clipboard"
+        items = getattr(self, items_attr, None)
+        if items is None:
+            items = []
+            setattr(self, items_attr, items)
+        if not hasattr(self, clip_attr):
+            setattr(self, clip_attr, None)
+
+        def _v(name: str, default=""):
+            attr = f"{prefix}_{list_key}_{name}"
+            vv = getattr(self, attr, None)
+            if vv is None:
+                vv = tk.StringVar(value=str(default))
+                setattr(self, attr, vv)
+            return vv
+
+        nation_var = _v("nation", "")
+        apps_var = _v("apps", "0")
+        goals_var = _v("goals", "0")
+        comment_var = _v("comment", "")
+
+        btnbar = ttk.Frame(box)
+        btnbar.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 4))
+        for c in range(10):
+            btnbar.columnconfigure(c, weight=0)
+        btnbar.columnconfigure(9, weight=1)
+
+        listwrap = ttk.Frame(box)
+        listwrap.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
+        listwrap.columnconfigure(0, weight=1)
+        listwrap.rowconfigure(1, weight=1)
+
+        count_var = tk.StringVar(value=f"{len(items)} items")
+        ttk.Label(listwrap, textvariable=count_var).grid(row=0, column=0, sticky="w", pady=(0, 3))
+
+        treefrm = ttk.Frame(listwrap)
+        treefrm.grid(row=1, column=0, sticky="nsew")
+        treefrm.columnconfigure(0, weight=1)
+        treefrm.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(treefrm, columns=("nation", "apps", "goals"), show="headings", height=5, selectmode="browse")
+        tree.heading("nation", text="Nation")
+        tree.heading("apps", text=apps_label)
+        tree.heading("goals", text=goals_label)
+        tree.column("nation", width=220, anchor="w")
+        tree.column("apps", width=150, anchor="center")
+        tree.column("goals", width=150, anchor="center")
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll = ttk.Scrollbar(treefrm, orient="vertical", command=tree.yview)
+        yscroll.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=yscroll.set)
+        setattr(self, f"{prefix}_{list_key}_tree", tree)
+
+        editf = ttk.Frame(box)
+        editf.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 6))
+        for c in range(8):
+            editf.columnconfigure(c, weight=1 if c in (1, 3, 5) else 0)
+
+        ttk.Label(editf, text="Nation").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=3)
+        nation_picker = self._make_searchable_picker(editf, nation_var, nation_labels, width=30)
+        nation_picker.grid(row=0, column=1, sticky="ew", padx=(0, 10), pady=3)
+
+        ttk.Label(editf, text=apps_label).grid(row=0, column=2, sticky="w", padx=(0, 6), pady=3)
+        apps_entry = ttk.Entry(editf, textvariable=apps_var, width=10)
+        apps_entry.grid(row=0, column=3, sticky="w", padx=(0, 10), pady=3)
+
+        ttk.Label(editf, text=goals_label).grid(row=0, column=4, sticky="w", padx=(0, 6), pady=3)
+        goals_entry = ttk.Entry(editf, textvariable=goals_var, width=10)
+        goals_entry.grid(row=0, column=5, sticky="w", padx=(0, 10), pady=3)
+
+        _syncing = {"on": False}
+
+        def _norm_int_str(v: str) -> str:
+            t = (v or "").strip()
+            if t == "":
+                return "0"
+            try:
+                return str(int(float(t)))
+            except Exception:
+                return t
+
+        def _rec_from_editor():
+            return {
+                "nation": (nation_var.get() or "").strip(),
+                "apps": _norm_int_str(apps_var.get()),
+                "goals": _norm_int_str(goals_var.get()),
+                "comment": (comment_var.get() or "").strip(),
+            }
+
+        def _set_editor(rec=None):
+            _syncing["on"] = True
+            try:
+                rec = rec or {}
+                nation_var.set(rec.get("nation", "") or "")
+                apps_var.set(str(rec.get("apps", "0") or "0"))
+                goals_var.set(str(rec.get("goals", "0") or "0"))
+                comment_var.set(rec.get("comment", "") or "")
+            finally:
+                _syncing["on"] = False
+
+        def _sel_idx():
+            sel = tree.selection()
+            if not sel:
+                return None
+            try:
+                return int(str(sel[0]))
+            except Exception:
+                return None
+
+        def _refresh(select_idx=None):
+            for iid in tree.get_children():
+                tree.delete(iid)
+            for idx, rec in enumerate(items):
+                tree.insert("", "end", iid=str(idx), values=(
+                    rec.get("nation", "") or "",
+                    rec.get("apps", "0") or "0",
+                    rec.get("goals", "0") or "0",
+                ))
+            count_var.set(f"{len(items)} items")
+            if select_idx is not None and 0 <= int(select_idx) < len(items):
+                iid = str(int(select_idx))
+                try:
+                    tree.selection_set(iid)
+                    tree.focus(iid)
+                    tree.see(iid)
+                except Exception:
+                    pass
+
+        def _on_select(event=None):
+            idx = _sel_idx()
+            if idx is None or idx < 0 or idx >= len(items):
+                return
+            _set_editor(dict(items[idx]))
+
+        def _update_selected_from_editor(*_):
+            if _syncing["on"]:
+                return
+            idx = _sel_idx()
+            if idx is None or idx < 0 or idx >= len(items):
+                return
+            items[idx] = _rec_from_editor()
+            _refresh(select_idx=idx)
+
+        def _add():
+            items.append(_rec_from_editor())
+            _refresh(select_idx=len(items) - 1)
+
+        def _duplicate():
+            idx = _sel_idx()
+            if idx is None or idx < 0 or idx >= len(items):
+                return
+            items.insert(idx + 1, dict(items[idx]))
+            _refresh(select_idx=idx + 1)
+
+        def _remove():
+            idx = _sel_idx()
+            if idx is None or idx < 0 or idx >= len(items):
+                return
+            del items[idx]
+            new_idx = min(idx, len(items) - 1)
+            _refresh(select_idx=new_idx if new_idx >= 0 else None)
+            if not items:
+                _set_editor(None)
+
+        def _copy():
+            idx = _sel_idx()
+            if idx is None or idx < 0 or idx >= len(items):
+                return
+            setattr(self, clip_attr, dict(items[idx]))
+
+        def _paste():
+            clip = getattr(self, clip_attr, None)
+            if not isinstance(clip, dict):
+                return
+            idx = _sel_idx()
+            if idx is None:
+                items.append(dict(clip))
+                idx = len(items) - 1
+            else:
+                items.insert(idx + 1, dict(clip))
+                idx += 1
+            _refresh(select_idx=idx)
+
+        def _clear():
+            items.clear()
+            _refresh()
+            _set_editor(None)
+
+        def _add_comment():
+            idx = _sel_idx()
+            if idx is None or idx < 0 or idx >= len(items):
+                try:
+                    messagebox.showinfo(title, "Select an item first, then click Add Comment.")
+                except Exception:
+                    pass
+                return
+            rec = dict(items[idx])
+            existing = (rec.get("comment") or "").strip()
+            rec["comment"] = existing if existing else "Comment"
+            items[idx] = rec
+            _set_editor(rec)
+            _refresh(select_idx=idx)
+
+        buttons = [
+            ("Add", _add),
+            ("Duplicate", _duplicate),
+            ("Remove", _remove),
+            ("Copy", _copy),
+            ("Paste", _paste),
+            ("Clear", _clear),
+            ("Add Comment", _add_comment),
+        ]
+        for i, (txt, cmd) in enumerate(buttons):
+            ttk.Button(btnbar, text=txt, command=cmd).grid(row=0, column=i, sticky="w", padx=(0, 4))
+
+        tree.bind("<<TreeviewSelect>>", _on_select, add="+")
+        for vv in (nation_var, apps_var, goals_var, comment_var):
+            try:
+                vv.trace_add("write", _update_selected_from_editor)
+            except Exception:
+                pass
+
+        _refresh()
+        if items:
+            _refresh(select_idx=0)
+        return box
+
+    def _add_international_data_section(self, parent, row: int, prefix: str):
+        """International Data tab UI (separate from Details tab)."""
+        wrap = ttk.Frame(parent)
+        wrap.grid(row=row, column=0, columnspan=2, sticky="ew", padx=4, pady=4)
+        wrap.columnconfigure(0, weight=1)
+
+        infof = ttk.LabelFrame(wrap, text="International Data")
+        infof.grid(row=0, column=0, sticky="ew", padx=4, pady=(0, 8))
+        infof.columnconfigure(2, weight=1)
+
+        nation_rows = list(self._load_master_library_rows(kind="nation"))
+        nation_labels = [x.get("nation_name") or x.get("name") or "" for x in nation_rows]
+        nation_labels = [x for x in nation_labels if x]
+
+        def _iv(key: str, default=""):
+            mode_attr = f"{prefix}_intl_{key}_mode"
+            value_attr = f"{prefix}_intl_{key}_value"
+            mv = getattr(self, mode_attr, None)
+            if mv is None:
+                mv = tk.StringVar(value="random")
+                setattr(self, mode_attr, mv)
+            vv = getattr(self, value_attr, None)
+            if vv is None:
+                vv = tk.StringVar(value=str(default))
+                setattr(self, value_attr, vv)
+            return mv, vv
+
+        rows = [
+            ("International Apps", "international_apps", "int", "0"),
+            ("International Goals", "international_goals", "int", "0"),
+            ("U21 International Apps", "u21_international_apps", "int", "0"),
+            ("U21 International Goals", "u21_international_goals", "int", "0"),
+            ("International Debut Date", "international_debut_date", "date", ""),
+            ("International Debut Against", "international_debut_against", "nation", ""),
+            ("Date Of First International Goal", "first_international_goal_date", "date", ""),
+            ("First International Goal Against", "first_international_goal_against", "nation", ""),
+        ]
+
+        rr = 0
+        for label, key, kind, default in rows:
+            mode_var, value_var = _iv(key, default)
+            ttk.Label(infof, text=label).grid(row=rr, column=0, sticky="w", padx=6, pady=3)
+            rb_rand = ttk.Radiobutton(infof, text="Random", variable=mode_var, value="random")
+            rb_custom = ttk.Radiobutton(infof, text="Custom", variable=mode_var, value="custom")
+            rb_none = ttk.Radiobutton(infof, text="Don\'t set", variable=mode_var, value="none")
+            rb_rand.grid(row=rr, column=1, sticky="w", padx=(6, 2))
+            rb_custom.grid(row=rr, column=1, sticky="w", padx=(85, 2))
+            rb_none.grid(row=rr, column=1, sticky="w", padx=(165, 2))
+
+            if kind == "nation":
+                w = self._make_searchable_picker(infof, value_var, nation_labels, width=48)
+                w.grid(row=rr, column=2, sticky="ew", padx=6, pady=3)
+                self._bind_mode_enable(mode_var, "custom", [w], clear_on_random=False)
+            elif kind == "date":
+                rowf = ttk.Frame(infof)
+                rowf.grid(row=rr, column=2, sticky="ew", padx=6, pady=3)
+                rowf.columnconfigure(0, weight=1)
+                e = ttk.Entry(rowf, textvariable=value_var)
+                e.grid(row=0, column=0, sticky="ew")
+                b = ttk.Button(rowf, text="📅", width=3, command=lambda v=value_var: self._open_calendar(v))
+                b.grid(row=0, column=1, sticky="w", padx=(4, 0))
+                self._bind_mode_enable(mode_var, "custom", [e, b], clear_on_random=False)
+            else:
+                w = ttk.Entry(infof, textvariable=value_var)
+                w.grid(row=rr, column=2, sticky="ew", padx=6, pady=3)
+                self._bind_mode_enable(mode_var, "custom", [w], clear_on_random=False)
+            rr += 1
+
+        self._add_international_caps_list(wrap, row=1, prefix=prefix, list_key="other_nation_caps", title="Other Nation Caps", apps_label="International Apps", goals_label="International Goals")
+        self._add_international_caps_list(wrap, row=2, prefix=prefix, list_key="other_nation_youth_caps", title="Other Nation Youth Caps", apps_label="U21 International Apps", goals_label="U21 International Goals")
+
+
+
+
+    def _build_batch_international_tab(self) -> None:
+        frm = self.batch_international_body
+        for c in range(2):
+            frm.columnconfigure(c, weight=1)
+
+        # Mirrored file inputs on International Data tab (synced with Other/Details)
+        paths = ttk.LabelFrame(frm, text="File inputs")
+        paths.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 8))
+        paths.columnconfigure(1, weight=1)
+        self.batch_international_paths_frame = paths
+
+        def row_file(r, label, var, is_save=False):
+            ttk.Label(paths, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
+            ttk.Entry(paths, textvariable=var).grid(row=r, column=1, sticky="ew", padx=(0, 6), pady=6)
+            if is_save:
+                ttk.Button(paths, text="Browse…", command=lambda: self._pick_save_xml(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
+            else:
+                ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
+
+        row_file(0, "master_library.csv:", self.batch_clubs, is_save=False)
+        row_file(1, "Male first names CSV:", self.batch_first, is_save=False)
+        row_file(2, "Female first names CSV:", self.batch_female_first, is_save=False)
+        row_file(3, "Common names CSV:", self.batch_common_names, is_save=False)
+        row_file(4, "Surnames CSV:", self.batch_surn, is_save=False)
+        row_file(5, "Output XML:", self.batch_out, is_save=True)
+        row_file(6, "Generator script:", self.batch_script, is_save=False)
+        row_file(7, "Region mapping CSV (placeholder):", self.batch_region_map_csv, is_save=False)
+
+        genf = ttk.LabelFrame(frm, text="Generation settings (synced with Other)")
+        genf.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        for c in range(6):
+            genf.columnconfigure(c, weight=1)
+        ttk.Label(genf, text="Count").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(genf, textvariable=self.batch_count, width=10).grid(row=0, column=1, sticky="w", padx=6, pady=6)
+        ttk.Label(genf, text="Seed").grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(genf, textvariable=self.batch_seed, width=10).grid(row=0, column=3, sticky="w", padx=6, pady=6)
+        ttk.Label(genf, text="Base year").grid(row=0, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(genf, textvariable=self.batch_base_year, width=10).grid(row=0, column=5, sticky="w", padx=6, pady=6)
+
+        self._add_international_data_section(frm, row=2, prefix="batch")
+
+    def _build_single_international_tab(self) -> None:
+        frm = self.single_international_body
+        for c in range(2):
+            frm.columnconfigure(c, weight=1)
+
+        # Mirrored file inputs on International Data tab (synced with Other/Details)
+        paths = ttk.LabelFrame(frm, text="File inputs")
+        paths.grid(row=0, column=0, sticky="ew", padx=8, pady=(0, 8))
+        paths.columnconfigure(1, weight=1)
+        self.single_international_paths_frame = paths
+
+        def row_file(r, label, var, is_save=False):
+            ttk.Label(paths, text=label).grid(row=r, column=0, sticky="w", padx=(8, 6), pady=6)
+            ttk.Entry(paths, textvariable=var).grid(row=r, column=1, sticky="ew", padx=(0, 6), pady=6)
+            if is_save:
+                ttk.Button(paths, text="Browse…", command=lambda: self._pick_save_xml(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
+            else:
+                ttk.Button(paths, text="Browse…", command=lambda: self._pick_open_file(var)).grid(row=r, column=2, sticky="ew", padx=(0, 8), pady=6)
+
+        row_file(0, "master_library.csv:", self.single_clubs, is_save=False)
+        row_file(1, "Male first names CSV:", self.single_first, is_save=False)
+        row_file(2, "Female first names CSV:", self.single_female_first, is_save=False)
+        row_file(3, "Common names CSV:", self.single_common_names, is_save=False)
+        row_file(4, "Surnames CSV:", self.single_surn, is_save=False)
+        row_file(5, "Output XML:", self.single_out, is_save=True)
+        row_file(6, "Generator script:", self.single_script, is_save=False)
+        row_file(7, "Region mapping CSV (placeholder):", self.single_region_map_csv, is_save=False)
+
+        genf = ttk.LabelFrame(frm, text="Generation settings (synced with Other)")
+        genf.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        for c in range(4):
+            genf.columnconfigure(c, weight=1)
+        ttk.Label(genf, text="Seed").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(genf, textvariable=self.single_seed, width=10).grid(row=0, column=1, sticky="w", padx=6, pady=6)
+        ttk.Label(genf, text="Base year").grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(genf, textvariable=self.single_base_year, width=10).grid(row=0, column=3, sticky="w", padx=6, pady=6)
+
+        self._add_international_data_section(frm, row=2, prefix="single")
+
     def _build_extractor_tab(self) -> None:
         frm = self.extract_tab
         frm.columnconfigure(1, weight=1)
@@ -2223,10 +2703,10 @@ class App(tk.Tk):
         frm.columnconfigure(1, weight=1)
 
         self.batch_clubs = tk.StringVar(value=str(self.fmdata_dir / "master_library.csv"))
-        self.batch_first = tk.StringVar(value=str(self.fmdata_dir / "male_first_names.csv"))
-        self.batch_female_first = tk.StringVar(value=str(self.fmdata_dir / "female_first_names.csv"))
-        self.batch_common_names = tk.StringVar(value=str(self.fmdata_dir / "common_names.csv"))
-        self.batch_surn = tk.StringVar(value=str(self.fmdata_dir / "surnames.csv"))
+        self.batch_first = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "male_first_names"))
+        self.batch_female_first = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "female_first_names"))
+        self.batch_common_names = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "common_names"))
+        self.batch_surn = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "surnames"))
         self.batch_out = tk.StringVar(value=str(self.fmdata_dir / "fm26_players.xml"))
         self.batch_script = tk.StringVar(value=str(self.fmdata_dir / DEFAULT_GENERATE_SCRIPT))
 
@@ -2242,6 +2722,8 @@ class App(tk.Tk):
         self.batch_ca_max = tk.StringVar(value="160")
         self.batch_pa_min = tk.StringVar(value="80")
         self.batch_pa_max = tk.StringVar(value="200")
+        self.batch_ca_dont_set = tk.BooleanVar(value=False)
+        self.batch_pa_dont_set = tk.BooleanVar(value=False)
 
         # DOB mode
         self.batch_dob_mode = tk.StringVar(value="range")  # age|range|fixed (Age range controls moved to Details tab)
@@ -2265,17 +2747,20 @@ class App(tk.Tk):
 
         # Feet
         self.batch_feet_mode = tk.StringVar(value="random")
+        self.batch_feet_dont_set = tk.BooleanVar(value=False)
         self.batch_feet_override = tk.BooleanVar(value=False)
         self.batch_left_foot = tk.StringVar(value="10")
         self.batch_right_foot = tk.StringVar(value="20")
 
         # Wage / Reputation / Transfer value
         self.batch_wage_mode = tk.StringVar(value="range")  # range|fixed
+        self.batch_wage_dont_set = tk.BooleanVar(value=False)
         self.batch_wage_min = tk.StringVar(value="30")
         self.batch_wage_max = tk.StringVar(value="80")
         self.batch_wage_fixed = tk.StringVar(value="")
 
         self.batch_rep_mode = tk.StringVar(value="range")  # range|fixed
+        self.batch_rep_dont_set = tk.BooleanVar(value=False)
         self.batch_rep_min = tk.StringVar(value="0")
         self.batch_rep_max = tk.StringVar(value="200")
         self.batch_rep_current = tk.StringVar(value="")
@@ -2283,12 +2768,14 @@ class App(tk.Tk):
         self.batch_rep_world = tk.StringVar(value="")
 
         self.batch_tv_mode = tk.StringVar(value="auto")  # auto|fixed|range
+        self.batch_tv_dont_set = tk.BooleanVar(value=False)
         self.batch_tv_fixed = tk.StringVar(value="")
         self.batch_tv_min = tk.StringVar(value="")
         self.batch_tv_max = tk.StringVar(value="")
 
         # Positions
         self.batch_positions_random = tk.BooleanVar(value=True)
+        self.batch_positions_dont_set = tk.BooleanVar(value=False)
         self.batch_pos_vars: dict[str, tk.BooleanVar] = {p: tk.BooleanVar(value=False) for p in ALL_POS}
 
         # Development positions (extra positions added at 2..19)
@@ -2361,6 +2848,8 @@ class App(tk.Tk):
 
         btnrow = ttk.Frame(opt)
         btnrow.grid(row=3, column=0, columnspan=6, sticky="w", padx=6, pady=(0, 6))
+        ttk.Checkbutton(btnrow, text="Don't set CA", variable=self.batch_ca_dont_set).grid(row=0, column=0, sticky="w", padx=(2, 12))
+        ttk.Checkbutton(btnrow, text="Don't set PA", variable=self.batch_pa_dont_set).grid(row=0, column=1, sticky="w", padx=(2, 12))
 
         # Height + feet (shared builder)
         self._add_height_feet_section(
@@ -2375,12 +2864,13 @@ class App(tk.Tk):
             left_foot_var=self.batch_left_foot,
             right_foot_var=self.batch_right_foot,
             show_height=False,
+            feet_none_var=self.batch_feet_dont_set,
         )
 
         # Wage + Reputation + Transfer Value
         money = ttk.LabelFrame(frm, text="Wage + Reputation + Transfer Value")
         money.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
-        for c in range(10):
+        for c in range(13):
             money.columnconfigure(c, weight=1)
 
         # Wage
@@ -2388,6 +2878,7 @@ class App(tk.Tk):
         ttk.Radiobutton(money, text="Random range", variable=self.batch_wage_mode, value="range").grid(row=0, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(money, text="Fixed", variable=self.batch_wage_mode, value="fixed").grid(row=0, column=2, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Min").grid(row=0, column=3, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(money, text="Don't set", variable=self.batch_wage_dont_set).grid(row=0, column=10, columnspan=2, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.batch_wage_min, width=6).grid(row=0, column=4, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Max").grid(row=0, column=5, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.batch_wage_max, width=6).grid(row=0, column=6, sticky="w", padx=8, pady=6)
@@ -2400,6 +2891,7 @@ class App(tk.Tk):
         ttk.Radiobutton(money, text="Random ordered", variable=self.batch_rep_mode, value="range").grid(row=1, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(money, text="Fixed", variable=self.batch_rep_mode, value="fixed").grid(row=1, column=2, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Range").grid(row=1, column=3, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(money, text="Don't set", variable=self.batch_rep_dont_set).grid(row=1, column=10, columnspan=2, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.batch_rep_min, width=6).grid(row=1, column=4, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="to").grid(row=1, column=5, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.batch_rep_max, width=6).grid(row=1, column=6, sticky="w", padx=8, pady=6)
@@ -2415,13 +2907,14 @@ class App(tk.Tk):
         ttk.Label(money, text="Transfer value").grid(row=4, column=0, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Mode").grid(row=4, column=1, sticky="w", padx=8, pady=6)
         ttk.Combobox(money, textvariable=self.batch_tv_mode, values=["auto", "fixed", "range"], state="readonly", width=10).grid(row=4, column=2, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="Fixed").grid(row=4, column=3, sticky="w", padx=8, pady=6)
-        ttk.Entry(money, textvariable=self.batch_tv_fixed, width=12).grid(row=4, column=4, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="Range").grid(row=4, column=5, sticky="w", padx=8, pady=6)
-        ttk.Entry(money, textvariable=self.batch_tv_min, width=12).grid(row=4, column=6, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="to").grid(row=4, column=7, sticky="w", padx=8, pady=6)
-        ttk.Entry(money, textvariable=self.batch_tv_max, width=12).grid(row=4, column=8, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="Fixed").grid(row=4, column=4, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(money, text="Don't set", variable=self.batch_tv_dont_set).grid(row=4, column=11, columnspan=2, sticky="w", padx=8, pady=6)
+        ttk.Entry(money, textvariable=self.batch_tv_fixed, width=12).grid(row=4, column=5, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="Range").grid(row=4, column=6, sticky="w", padx=8, pady=6)
+        ttk.Entry(money, textvariable=self.batch_tv_min, width=12).grid(row=4, column=7, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="to").grid(row=4, column=8, sticky="w", padx=8, pady=6)
+        ttk.Entry(money, textvariable=self.batch_tv_max, width=12).grid(row=4, column=9, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=10, sticky="w", padx=(0, 4), pady=6)
 
         # Club / City / Nation selection
         sel = ttk.LabelFrame(frm, text="Club")
@@ -2429,6 +2922,7 @@ class App(tk.Tk):
         sel.columnconfigure(3, weight=1)
 
         self.batch_club_mode = tk.StringVar(value="random")
+        self.batch_club_dont_set = tk.BooleanVar(value=False)
         self.batch_city_mode = tk.StringVar(value="random")
         self.batch_nation_mode = tk.StringVar(value="random")
 
@@ -2447,13 +2941,15 @@ class App(tk.Tk):
         self.batch_club_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_club_filter('batch'))
         ttk.Radiobutton(sel, text="Random", variable=self.batch_club_mode, value="random", command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(sel, text="Fixed", variable=self.batch_club_mode, value="fixed", command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(sel, text="Don't set", variable=self.batch_club_dont_set).grid(row=1, column=1, sticky="w", padx=8, pady=(0, 4))
 
-        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
+        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
 
         # Positions
         pos = ttk.LabelFrame(frm, text="Positions")
         pos.grid(row=10, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.batch_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(pos, text="Don't set", variable=self.batch_positions_dont_set).grid(row=0, column=1, sticky="w", padx=8, pady=6)
 
         grid = ttk.Frame(pos)
         grid.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
@@ -2564,10 +3060,10 @@ class App(tk.Tk):
         frm.columnconfigure(1, weight=1)
 
         self.single_clubs = tk.StringVar(value=str(self.fmdata_dir / "master_library.csv"))
-        self.single_first = tk.StringVar(value=str(self.fmdata_dir / "male_first_names.csv"))
-        self.single_female_first = tk.StringVar(value=str(self.fmdata_dir / "female_first_names.csv"))
-        self.single_common_names = tk.StringVar(value=str(self.fmdata_dir / "common_names.csv"))
-        self.single_surn = tk.StringVar(value=str(self.fmdata_dir / "surnames.csv"))
+        self.single_first = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "male_first_names"))
+        self.single_female_first = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "female_first_names"))
+        self.single_common_names = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "common_names"))
+        self.single_surn = tk.StringVar(value=_preferred_name_csv_path(self.fmdata_dir, "surnames"))
         self.single_out = tk.StringVar(value=str(self.fmdata_dir / "fm26_single_player.xml"))
         self.single_script = tk.StringVar(value=str(self.fmdata_dir / DEFAULT_GENERATE_SCRIPT))
 
@@ -2589,6 +3085,8 @@ class App(tk.Tk):
 
         self.single_ca = tk.StringVar(value="120")
         self.single_pa = tk.StringVar(value="170")
+        self.single_ca_dont_set = tk.BooleanVar(value=False)
+        self.single_pa_dont_set = tk.BooleanVar(value=False)
         # Optional single-player CA/PA range overrides (leave blank to use fixed CA/PA above)
         self.single_ca_min = tk.StringVar(value="")
         self.single_ca_max = tk.StringVar(value="")
@@ -2601,16 +3099,19 @@ class App(tk.Tk):
         self.single_height_fixed = tk.StringVar(value="")
 
         self.single_feet_mode = tk.StringVar(value="random")
+        self.single_feet_dont_set = tk.BooleanVar(value=False)
         self.single_feet_override = tk.BooleanVar(value=False)
         self.single_left_foot = tk.StringVar(value="10")
         self.single_right_foot = tk.StringVar(value="20")
 
         self.single_wage_mode = tk.StringVar(value="range")
+        self.single_wage_dont_set = tk.BooleanVar(value=False)
         self.single_wage_min = tk.StringVar(value="30")
         self.single_wage_max = tk.StringVar(value="80")
         self.single_wage_fixed = tk.StringVar(value="")
 
         self.single_rep_mode = tk.StringVar(value="range")
+        self.single_rep_dont_set = tk.BooleanVar(value=False)
         self.single_rep_min = tk.StringVar(value="0")
         self.single_rep_max = tk.StringVar(value="200")
         self.single_rep_current = tk.StringVar(value="")
@@ -2618,11 +3119,13 @@ class App(tk.Tk):
         self.single_rep_world = tk.StringVar(value="")
 
         self.single_tv_mode = tk.StringVar(value="auto")
+        self.single_tv_dont_set = tk.BooleanVar(value=False)
         self.single_tv_fixed = tk.StringVar(value="")
         self.single_tv_min = tk.StringVar(value="")
         self.single_tv_max = tk.StringVar(value="")
 
         self.single_positions_random = tk.BooleanVar(value=True)
+        self.single_positions_dont_set = tk.BooleanVar(value=False)
         self.single_pos_vars: dict[str, tk.BooleanVar] = {p: tk.BooleanVar(value=False) for p in ALL_POS}
 
         # Development positions (extra positions added at 2..19)
@@ -2688,6 +3191,8 @@ class App(tk.Tk):
 
         btnrow = ttk.Frame(opt)
         btnrow.grid(row=4, column=0, columnspan=8, sticky="w", padx=6, pady=(0, 6))
+        ttk.Checkbutton(btnrow, text="Don't set CA", variable=self.single_ca_dont_set).grid(row=0, column=0, sticky="w", padx=(2, 12))
+        ttk.Checkbutton(btnrow, text="Don't set PA", variable=self.single_pa_dont_set).grid(row=0, column=1, sticky="w", padx=(2, 12))
 
         # Height + feet (shared builder)
         self._add_height_feet_section(
@@ -2702,18 +3207,20 @@ class App(tk.Tk):
             left_foot_var=self.single_left_foot,
             right_foot_var=self.single_right_foot,
             show_height=False,
+            feet_none_var=self.single_feet_dont_set,
         )
 
         # Wage + Reputation + Transfer Value
         money = ttk.LabelFrame(frm, text="Wage + Reputation + Transfer Value")
         money.grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
-        for c in range(10):
+        for c in range(13):
             money.columnconfigure(c, weight=1)
 
         ttk.Label(money, text="Wage").grid(row=0, column=0, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(money, text="Random range", variable=self.single_wage_mode, value="range").grid(row=0, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(money, text="Fixed", variable=self.single_wage_mode, value="fixed").grid(row=0, column=2, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Min").grid(row=0, column=3, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(money, text="Don't set", variable=self.single_wage_dont_set).grid(row=0, column=10, columnspan=2, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.single_wage_min, width=6).grid(row=0, column=4, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Max").grid(row=0, column=5, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.single_wage_max, width=6).grid(row=0, column=6, sticky="w", padx=8, pady=6)
@@ -2725,6 +3232,7 @@ class App(tk.Tk):
         ttk.Radiobutton(money, text="Random ordered", variable=self.single_rep_mode, value="range").grid(row=1, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(money, text="Fixed", variable=self.single_rep_mode, value="fixed").grid(row=1, column=2, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Range").grid(row=1, column=3, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(money, text="Don't set", variable=self.single_rep_dont_set).grid(row=1, column=10, columnspan=2, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.single_rep_min, width=6).grid(row=1, column=4, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="to").grid(row=1, column=5, sticky="w", padx=8, pady=6)
         ttk.Entry(money, textvariable=self.single_rep_max, width=6).grid(row=1, column=6, sticky="w", padx=8, pady=6)
@@ -2739,13 +3247,14 @@ class App(tk.Tk):
         ttk.Label(money, text="Transfer value").grid(row=4, column=0, sticky="w", padx=8, pady=6)
         ttk.Label(money, text="Mode").grid(row=4, column=1, sticky="w", padx=8, pady=6)
         ttk.Combobox(money, textvariable=self.single_tv_mode, values=["auto", "fixed", "range"], state="readonly", width=10).grid(row=4, column=2, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="Fixed").grid(row=4, column=3, sticky="w", padx=8, pady=6)
-        ttk.Entry(money, textvariable=self.single_tv_fixed, width=12).grid(row=4, column=4, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="Range").grid(row=4, column=5, sticky="w", padx=8, pady=6)
-        ttk.Entry(money, textvariable=self.single_tv_min, width=12).grid(row=4, column=6, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="to").grid(row=4, column=7, sticky="w", padx=8, pady=6)
-        ttk.Entry(money, textvariable=self.single_tv_max, width=12).grid(row=4, column=8, sticky="w", padx=8, pady=6)
-        ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=9, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="Fixed").grid(row=4, column=4, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(money, text="Don't set", variable=self.single_tv_dont_set).grid(row=4, column=11, columnspan=2, sticky="w", padx=8, pady=6)
+        ttk.Entry(money, textvariable=self.single_tv_fixed, width=12).grid(row=4, column=5, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="Range").grid(row=4, column=6, sticky="w", padx=8, pady=6)
+        ttk.Entry(money, textvariable=self.single_tv_min, width=12).grid(row=4, column=7, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="to").grid(row=4, column=8, sticky="w", padx=8, pady=6)
+        ttk.Entry(money, textvariable=self.single_tv_max, width=12).grid(row=4, column=9, sticky="w", padx=8, pady=6)
+        ttk.Label(money, text="(auto uses PA, max 150,000,000)", foreground="#444").grid(row=4, column=10, sticky="w", padx=(0, 4), pady=6)
 
         # Club / City / Nation selection
         sel = ttk.LabelFrame(frm, text="Club")
@@ -2753,6 +3262,7 @@ class App(tk.Tk):
         sel.columnconfigure(3, weight=1)
 
         self.single_club_mode = tk.StringVar(value="random")
+        self.single_club_dont_set = tk.BooleanVar(value=False)
         self.single_city_mode = tk.StringVar(value="random")
         self.single_nation_mode = tk.StringVar(value="random")
 
@@ -2771,13 +3281,15 @@ class App(tk.Tk):
         self.single_club_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_club_filter('single'))
         ttk.Radiobutton(sel, text="Random", variable=self.single_club_mode, value="random", command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
         ttk.Radiobutton(sel, text="Fixed", variable=self.single_club_mode, value="fixed", command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(sel, text="Don't set", variable=self.single_club_dont_set).grid(row=1, column=1, sticky="w", padx=8, pady=(0, 4))
 
-        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=1, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
+        ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
 
         # Positions
         pos = ttk.LabelFrame(frm, text="Positions")
         pos.grid(row=10, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         ttk.Checkbutton(pos, text="Random positions (ignore selections)", variable=self.single_positions_random).grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        ttk.Checkbutton(pos, text="Don't set", variable=self.single_positions_dont_set).grid(row=0, column=1, sticky="w", padx=8, pady=6)
 
         grid = ttk.Frame(pos)
         grid.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
@@ -2920,7 +3432,7 @@ class App(tk.Tk):
         except Exception:
             pass
         try:
-            fm_dir = detect_fm_editor_data_dir()
+            fm_dir = detect_fm26_editor_data_dir()
             if fm_dir:
                 candidates.append(str(Path(fm_dir) / raw))
                 candidates.append(str(Path(fm_dir) / "fmdata" / raw))
@@ -2971,14 +3483,150 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+    def _append_details_dontset_cli_args(self, extra: list, prefix: str) -> None:
+        """Append --omit-field flags for Details fields set to Don't set."""
+        def _mode(name: str, default: str = "random") -> str:
+            v = getattr(self, f"{prefix}_details_{name}_mode", None)
+            if v is None:
+                return default
+            try:
+                return str(v.get() or default).strip().lower()
+            except Exception:
+                return default
+
+        def _append_omit(name: str) -> None:
+            extra.extend(["--omit-field", name])
+
+        # Details rows that map directly to generator field keys.
+        for key in (
+            "first_name",
+            "second_name",
+            "common_name",
+            "full_name",
+            "gender",
+            "ethnicity",
+            "hair_colour",
+            "hair_length",
+            "skin_tone",
+            "body_type",
+            "city_of_birth",
+            "nation",
+            "nationality_info",
+            "declared_for_youth_nation",
+        ):
+            if _mode(key) == "none":
+                _append_omit(key)
+
+        # Shared DOB mode (used by Details compact DOB block)
+        try:
+            dob_mode = str(getattr(self, f"{prefix}_dob_mode").get() or "age").strip().lower()
+            if dob_mode == "none":
+                _append_omit("dob")
+        except Exception:
+            pass
+
+        # Preferred Details height block mode (mode2); fall back to legacy details_height_mode if present
+        try:
+            h_mode = ""
+            if hasattr(self, f"{prefix}_details_height_mode2"):
+                h_mode = str(getattr(self, f"{prefix}_details_height_mode2").get() or "").strip().lower()
+            elif hasattr(self, f"{prefix}_details_height_mode"):
+                h_mode = str(getattr(self, f"{prefix}_details_height_mode").get() or "").strip().lower()
+            if h_mode == "none":
+                _append_omit("height")
+        except Exception:
+            pass
+
+    def _append_international_data_cli_args(self, extra: list, prefix: str) -> None:
+        """Append International Data tab fields (custom values only) to generator CLI args."""
+        def _gv(attr: str, default: str = "") -> str:
+            v = getattr(self, attr, None)
+            if v is None:
+                return default
+            try:
+                return v.get()
+            except Exception:
+                return default
+
+        # Integer counters
+        for key, arg in [
+            ("international_apps", "--international_apps"),
+            ("international_goals", "--international_goals"),
+            ("u21_international_apps", "--u21_international_apps"),
+            ("u21_international_goals", "--u21_international_goals"),
+        ]:
+            mode = str(_gv(f"{prefix}_intl_{key}_mode", "random") or "random").strip().lower()
+            val = str(_gv(f"{prefix}_intl_{key}_value", "") or "").strip()
+            if mode == "none":
+                extra.extend(["--omit-field", key])
+            elif mode == "custom" and val != "":
+                try:
+                    extra.extend([arg, str(int(val))])
+                except Exception:
+                    raise ValueError(f"{key.replace('_', ' ').title()} must be an integer")
+            else:
+                # random/auto => generator estimates based on age/PA/nation strength
+                extra.extend([arg, "-2"])
+
+        # Date strings (generator validates/parses YYYY-MM-DD)
+        for key, arg in [
+            ("international_debut_date", "--international_debut_date"),
+            ("first_international_goal_date", "--first_international_goal_date"),
+        ]:
+            mode = str(_gv(f"{prefix}_intl_{key}_mode", "random") or "random").strip().lower()
+            val = str(_gv(f"{prefix}_intl_{key}_value", "") or "").strip()
+            if mode == "none":
+                extra.extend(["--omit-field", key])
+            elif mode == "custom" and val:
+                extra.extend([arg, val])
+
+        # Nation strings (GUI passes display text; generator resolves via master library nations)
+        for key, arg in [
+            ("international_debut_against", "--international_debut_against"),
+            ("first_international_goal_against", "--first_international_goal_against"),
+        ]:
+            mode = str(_gv(f"{prefix}_intl_{key}_mode", "random") or "random").strip().lower()
+            val = str(_gv(f"{prefix}_intl_{key}_value", "") or "").strip()
+            if mode == "none":
+                extra.extend(["--omit-field", key])
+            elif mode == "custom" and val:
+                extra.extend([arg, val])
+
+        # Other Nation Caps / Youth Caps list payloads (JSON strings)
+        import json as _json
+        for list_key, arg in [
+            ("other_nation_caps", "--other_nation_caps_json"),
+            ("other_nation_youth_caps", "--other_nation_youth_caps_json"),
+        ]:
+            items = getattr(self, f"{prefix}_{list_key}_items", None) or []
+            payload = []
+            for rec in items:
+                if not isinstance(rec, dict):
+                    continue
+                nation = str(rec.get("nation", "") or "").strip()
+                if not nation:
+                    continue
+                apps = str(rec.get("apps", "0") or "0").strip()
+                goals = str(rec.get("goals", "0") or "0").strip()
+                try:
+                    apps_i = int(float(apps)) if apps != "" else 0
+                    goals_i = int(float(goals)) if goals != "" else 0
+                except Exception:
+                    raise ValueError(f"{list_key.replace('_', ' ').title()} values must be integers")
+                payload.append({"nation": nation, "apps": apps_i, "goals": goals_i})
+            if payload:
+                extra.extend([arg, _json.dumps(payload, separators=(",", ":"))])
+
     def _run_batch_generator(self) -> None:
         extra: list[str] = []
         # Player tab: force person type = 2 (player) in generator builds that support it
         extra.extend(["--person_type_value", "2"])
 
         # DOB (supports legacy batch modes + Details-tab shared mode values)
-        mode = (self.batch_dob_mode.get() or "age").strip()
-        if mode == "fixed":
+        mode = (self.batch_dob_mode.get() or "age").strip().lower()
+        if mode == "none":
+            extra.extend(["--omit-field", "dob"])
+        elif mode == "fixed":
             d = self.batch_dob_fixed.get().strip()
             if not d:
                 messagebox.showerror("Fixed DOB missing", "Fixed DOB is selected, but the date is blank.")
@@ -3015,7 +3663,10 @@ class App(tk.Tk):
             extra.extend(["--contract_expires_date", d])
 
         # Height
-        if self.batch_height_mode.get() == "fixed":
+        _batch_height_mode = (self.batch_height_mode.get() or "random").strip().lower()
+        if _batch_height_mode == "none":
+            extra.extend(["--omit-field", "height"])
+        elif _batch_height_mode == "fixed":
             h = self.batch_height_fixed.get().strip()
             if not h:
                 messagebox.showerror("Height missing", "Fixed height selected, but Height is blank.")
@@ -3025,17 +3676,22 @@ class App(tk.Tk):
             extra.extend(["--height_min", self.batch_height_min.get().strip(), "--height_max", self.batch_height_max.get().strip()])
 
         # Feet
-        extra.extend(["--feet", (self.batch_feet_mode.get().strip() or "random")])
-        if self.batch_feet_override.get():
-            lf = self.batch_left_foot.get().strip()
-            rf = self.batch_right_foot.get().strip()
-            if not lf or not rf:
-                messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
-                return
-            extra.extend(["--left_foot", lf, "--right_foot", rf])
+        if self.batch_feet_dont_set.get():
+            extra.extend(["--omit-field", "feet"])
+        else:
+            extra.extend(["--feet", (self.batch_feet_mode.get().strip() or "random")])
+            if self.batch_feet_override.get():
+                lf = self.batch_left_foot.get().strip()
+                rf = self.batch_right_foot.get().strip()
+                if not lf or not rf:
+                    messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
+                    return
+                extra.extend(["--left_foot", lf, "--right_foot", rf])
 
         # Club/City/Nation fixed selections
-        if self.batch_club_mode.get() == "fixed":
+        if self.batch_club_dont_set.get():
+            extra.extend(["--omit-field", "club"])
+        elif self.batch_club_mode.get() == "fixed":
             sel = self.batch_club_sel.get().strip()
             ids = self._get_fixed_ids("club", sel)
             if not ids:
@@ -3060,7 +3716,10 @@ class App(tk.Tk):
             extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
 
         # Positions
-        if self.batch_positions_random.get():
+        if self.batch_positions_dont_set.get():
+            extra.extend(["--omit-field", "positions"])
+            extra.extend(["--auto_dev_chance", "0"])
+        elif self.batch_positions_random.get():
             # RANDOM positions: validate + pass editable distributions
             def _f(name: str, s: str) -> float:
                 try:
@@ -3152,9 +3811,10 @@ class App(tk.Tk):
                 messagebox.showerror("Dev range", "Dev min/max must be integers (2..19).")
                 return
             extra.extend(["--pos_dev_min", str(mn), "--pos_dev_max", str(mx)])
-
         # Wage
-        if self.batch_wage_mode.get() == "fixed":
+        if self.batch_wage_dont_set.get():
+            extra.extend(["--omit-field", "wage"])
+        elif self.batch_wage_mode.get() == "fixed":
             w = self.batch_wage_fixed.get().strip()
             if not w:
                 messagebox.showerror("Wage missing", "Fixed wage selected, but Wage is blank.")
@@ -3164,7 +3824,9 @@ class App(tk.Tk):
             extra.extend(["--wage_min", self.batch_wage_min.get().strip(), "--wage_max", self.batch_wage_max.get().strip()])
 
         # Reputation
-        if self.batch_rep_mode.get() == "fixed":
+        if self.batch_rep_dont_set.get():
+            extra.extend(["--omit-field", "reputation"])
+        elif self.batch_rep_mode.get() == "fixed":
             rc = self.batch_rep_current.get().strip()
             rh = self.batch_rep_home.get().strip()
             rw = self.batch_rep_world.get().strip()
@@ -3176,21 +3838,24 @@ class App(tk.Tk):
             extra.extend(["--rep_min", self.batch_rep_min.get().strip(), "--rep_max", self.batch_rep_max.get().strip()])
 
         # Transfer value
-        tv_mode = self.batch_tv_mode.get().strip() or "auto"
-        extra.extend(["--transfer_mode", tv_mode])
-        if tv_mode == "fixed":
-            tv = self.batch_tv_fixed.get().strip()
-            if not tv:
-                messagebox.showerror("Transfer value missing", "Transfer value mode is Fixed, but value is blank.")
-                return
-            extra.extend(["--transfer_value", tv])
-        elif tv_mode == "range":
-            tmin = self.batch_tv_min.get().strip()
-            tmax = self.batch_tv_max.get().strip()
-            if not tmin or not tmax:
-                messagebox.showerror("Transfer value missing", "Transfer mode is Range, but min/max are blank.")
-                return
-            extra.extend(["--transfer_min", tmin, "--transfer_max", tmax])
+        if self.batch_tv_dont_set.get():
+            extra.extend(["--omit-field", "transfer_value"])
+        else:
+            tv_mode = self.batch_tv_mode.get().strip() or "auto"
+            extra.extend(["--transfer_mode", tv_mode])
+            if tv_mode == "fixed":
+                tv = self.batch_tv_fixed.get().strip()
+                if not tv:
+                    messagebox.showerror("Transfer value missing", "Transfer value mode is Fixed, but value is blank.")
+                    return
+                extra.extend(["--transfer_value", tv])
+            elif tv_mode == "range":
+                tmin = self.batch_tv_min.get().strip()
+                tmax = self.batch_tv_max.get().strip()
+                if not tmin or not tmax:
+                    messagebox.showerror("Transfer value missing", "Transfer mode is Range, but min/max are blank.")
+                    return
+                extra.extend(["--transfer_min", tmin, "--transfer_max", tmax])
 
         # Details section (supported exports + UI-ready placeholders)
         try:
@@ -3235,6 +3900,9 @@ class App(tk.Tk):
                         _nat_info_added = True
             except Exception:
                 pass
+
+            # International Data tab (custom values only)
+            self._append_international_data_cli_args(extra, "batch")
 
             # Second Nations metadata export (editor values first, then first row as fallback)
             # NOTE: do NOT override the primary Details Nationality Info unless it is blank.
@@ -3286,16 +3954,26 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+            if self.batch_ca_dont_set.get():
+                extra.extend(["--omit-field", "ca"])
+            if self.batch_pa_dont_set.get():
+                extra.extend(["--omit-field", "pa"])
+            self._append_details_dontset_cli_args(extra, "batch")
+
             if self.batch_details_date_of_birth_mode.get() == "custom":
                 d = self.batch_details_date_of_birth_value.get().strip()
                 if d:
                     extra.extend(["--dob", d])
+            elif self.batch_details_date_of_birth_mode.get() == "none":
+                extra.extend(["--omit-field", "dob"])
 
             # Prefer new Details > Height block (range/fixed), fallback to legacy custom single-value height field
             details_height_handled = False
             try:
                 h_mode2 = (self.batch_details_height_mode2.get() if hasattr(self, "batch_details_height_mode2") else "").strip()
-                if h_mode2 == "fixed":
+                if h_mode2 == "none":
+                    details_height_handled = True
+                elif h_mode2 == "fixed":
                     h = self.batch_details_height_fixed.get().strip()
                     if h:
                         extra.extend(["--height", h])
@@ -3324,15 +4002,15 @@ class App(tk.Tk):
                         messagebox.showerror("City Of Birth", "Custom City Of Birth must be selected from the master_library city list.")
                         return
 
-            if self.batch_details_region_of_birth_mode.get() == "custom":
-                sel = self.batch_details_region_of_birth_value.get().strip()
-                if sel:
-                    ids = self._get_fixed_ids("nation", sel)
-                    if ids:
-                        extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
-                    else:
-                        messagebox.showerror("Region Of Birth", "Custom Region Of Birth currently maps to Nation and must be selected from the master_library nation list.")
-                        return
+        except Exception:
+            pass
+
+        _batch_age_min_arg = self.batch_age_min.get().strip()
+        _batch_age_max_arg = self.batch_age_max.get().strip()
+        try:
+            if (self.batch_dob_mode.get() or "age").strip().lower() == "none":
+                _batch_age_min_arg = ""
+                _batch_age_max_arg = ""
         except Exception:
             pass
 
@@ -3345,8 +4023,8 @@ class App(tk.Tk):
             surn=self.batch_surn.get().strip(),
             out_path=self.batch_out.get().strip(),
             count=self.batch_count.get().strip(),
-            age_min=self.batch_age_min.get().strip(),
-            age_max=self.batch_age_max.get().strip(),
+            age_min=_batch_age_min_arg,
+            age_max=_batch_age_max_arg,
             ca_min=self.batch_ca_min.get().strip(),
             ca_max=self.batch_ca_max.get().strip(),
             pa_min=self.batch_pa_min.get().strip(),
@@ -3390,11 +4068,17 @@ class App(tk.Tk):
         if not age_max:
             age_max = age or age_min or "14"
 
-        s_dob_mode = (self.single_dob_mode.get() or "age").strip()
+        s_dob_mode = (self.single_dob_mode.get() or "age").strip().lower()
 
         # Legacy single uses mode "dob" for fixed DOB.
         # Shared Details block now uses "range" for DOB range, but we also accept "fixed" for compatibility.
-        if s_dob_mode in ("dob", "fixed"):
+        if s_dob_mode == "none":
+            extra.extend(["--omit-field", "dob"])
+            # Do not force age args when DOB is explicitly omitted.
+            # Generator can use its own defaults internally if needed.
+            age_min = ""
+            age_max = ""
+        elif s_dob_mode in ("dob", "fixed"):
             dob = (getattr(self, "single_dob_fixed", self.single_dob).get() if hasattr(self, "single_dob_fixed") else self.single_dob.get()).strip()
             if not dob:
                 messagebox.showerror("DOB missing", "Use DOB / Fixed DOB is selected, but DOB is blank.")
@@ -3438,7 +4122,10 @@ class App(tk.Tk):
             extra.extend(["--contract_expires_date", d])
 
         # Height
-        if self.single_height_mode.get() == "fixed":
+        _single_height_mode = (self.single_height_mode.get() or "random").strip().lower()
+        if _single_height_mode == "none":
+            extra.extend(["--omit-field", "height"])
+        elif _single_height_mode == "fixed":
             h = self.single_height_fixed.get().strip()
             if not h:
                 messagebox.showerror("Height missing", "Fixed height selected, but Height is blank.")
@@ -3448,17 +4135,22 @@ class App(tk.Tk):
             extra.extend(["--height_min", self.single_height_min.get().strip(), "--height_max", self.single_height_max.get().strip()])
 
         # Feet
-        extra.extend(["--feet", (self.single_feet_mode.get().strip() or "random")])
-        if self.single_feet_override.get():
-            lf = self.single_left_foot.get().strip()
-            rf = self.single_right_foot.get().strip()
-            if not lf or not rf:
-                messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
-                return
-            extra.extend(["--left_foot", lf, "--right_foot", rf])
+        if self.single_feet_dont_set.get():
+            extra.extend(["--omit-field", "feet"])
+        else:
+            extra.extend(["--feet", (self.single_feet_mode.get().strip() or "random")])
+            if self.single_feet_override.get():
+                lf = self.single_left_foot.get().strip()
+                rf = self.single_right_foot.get().strip()
+                if not lf or not rf:
+                    messagebox.showerror("Feet missing", "Override feet is ticked, but Left/Right values are blank.")
+                    return
+                extra.extend(["--left_foot", lf, "--right_foot", rf])
 
         # Club/City/Nation fixed selections
-        if self.single_club_mode.get() == "fixed":
+        if self.single_club_dont_set.get():
+            extra.extend(["--omit-field", "club"])
+        elif self.single_club_mode.get() == "fixed":
             sel = self.single_club_sel.get().strip()
             ids = self._get_fixed_ids("club", sel)
             if not ids:
@@ -3483,7 +4175,10 @@ class App(tk.Tk):
             extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
 
         # Positions
-        if self.single_positions_random.get():
+        if self.single_positions_dont_set.get():
+            extra.extend(["--omit-field", "positions"])
+            extra.extend(["--auto_dev_chance", "0"])
+        elif self.single_positions_random.get():
             extra.extend(["--positions", "RANDOM"])
             if self.single_dev_enable.get():
                 extra.extend(["--auto_dev_chance", (self.single_auto_dev_chance.get().strip() or "0")])
@@ -3525,9 +4220,10 @@ class App(tk.Tk):
                 messagebox.showerror("Dev range", "Dev min/max must be integers (2..19).")
                 return
             extra.extend(["--pos_dev_min", str(mn), "--pos_dev_max", str(mx)])
-
         # Wage
-        if self.single_wage_mode.get() == "fixed":
+        if self.single_wage_dont_set.get():
+            extra.extend(["--omit-field", "wage"])
+        elif self.single_wage_mode.get() == "fixed":
             w = self.single_wage_fixed.get().strip()
             if not w:
                 messagebox.showerror("Wage missing", "Fixed wage selected, but Wage is blank.")
@@ -3537,7 +4233,9 @@ class App(tk.Tk):
             extra.extend(["--wage_min", self.single_wage_min.get().strip(), "--wage_max", self.single_wage_max.get().strip()])
 
         # Reputation
-        if self.single_rep_mode.get() == "fixed":
+        if self.single_rep_dont_set.get():
+            extra.extend(["--omit-field", "reputation"])
+        elif self.single_rep_mode.get() == "fixed":
             rc = self.single_rep_current.get().strip()
             rh = self.single_rep_home.get().strip()
             rw = self.single_rep_world.get().strip()
@@ -3549,21 +4247,24 @@ class App(tk.Tk):
             extra.extend(["--rep_min", self.single_rep_min.get().strip(), "--rep_max", self.single_rep_max.get().strip()])
 
         # Transfer value
-        tv_mode = self.single_tv_mode.get().strip() or "auto"
-        extra.extend(["--transfer_mode", tv_mode])
-        if tv_mode == "fixed":
-            tv = self.single_tv_fixed.get().strip()
-            if not tv:
-                messagebox.showerror("Transfer value missing", "Transfer value mode is Fixed, but value is blank.")
-                return
-            extra.extend(["--transfer_value", tv])
-        elif tv_mode == "range":
-            tmin = self.single_tv_min.get().strip()
-            tmax = self.single_tv_max.get().strip()
-            if not tmin or not tmax:
-                messagebox.showerror("Transfer value missing", "Transfer mode is Range, but min/max are blank.")
-                return
-            extra.extend(["--transfer_min", tmin, "--transfer_max", tmax])
+        if self.single_tv_dont_set.get():
+            extra.extend(["--omit-field", "transfer_value"])
+        else:
+            tv_mode = self.single_tv_mode.get().strip() or "auto"
+            extra.extend(["--transfer_mode", tv_mode])
+            if tv_mode == "fixed":
+                tv = self.single_tv_fixed.get().strip()
+                if not tv:
+                    messagebox.showerror("Transfer value missing", "Transfer value mode is Fixed, but value is blank.")
+                    return
+                extra.extend(["--transfer_value", tv])
+            elif tv_mode == "range":
+                tmin = self.single_tv_min.get().strip()
+                tmax = self.single_tv_max.get().strip()
+                if not tmin or not tmax:
+                    messagebox.showerror("Transfer value missing", "Transfer mode is Range, but min/max are blank.")
+                    return
+                extra.extend(["--transfer_min", tmin, "--transfer_max", tmax])
 
         # Details section (supported exports + UI-ready placeholders)
         try:
@@ -3608,6 +4309,9 @@ class App(tk.Tk):
                         _nat_info_added = True
             except Exception:
                 pass
+
+            # International Data tab (custom values only)
+            self._append_international_data_cli_args(extra, "single")
 
             # Second Nations metadata export (editor values first, then first row as fallback)
             # NOTE: do NOT override the primary Details Nationality Info unless it is blank.
@@ -3660,16 +4364,26 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+            if self.single_ca_dont_set.get():
+                extra.extend(["--omit-field", "ca"])
+            if self.single_pa_dont_set.get():
+                extra.extend(["--omit-field", "pa"])
+            self._append_details_dontset_cli_args(extra, "single")
+
             if self.single_details_date_of_birth_mode.get() == "custom":
                 d = self.single_details_date_of_birth_value.get().strip()
                 if d:
                     extra.extend(["--dob", d])
+            elif self.single_details_date_of_birth_mode.get() == "none":
+                extra.extend(["--omit-field", "dob"])
 
             # Prefer new Details > Height block (range/fixed), fallback to legacy custom single-value height field
             details_height_handled = False
             try:
                 h_mode2 = (self.single_details_height_mode2.get() if hasattr(self, "single_details_height_mode2") else "").strip()
-                if h_mode2 == "fixed":
+                if h_mode2 == "none":
+                    details_height_handled = True
+                elif h_mode2 == "fixed":
                     h = self.single_details_height_fixed.get().strip()
                     if h:
                         extra.extend(["--height", h])
@@ -3698,15 +4412,6 @@ class App(tk.Tk):
                         messagebox.showerror("City Of Birth", "Custom City Of Birth must be selected from the master_library city list.")
                         return
 
-            if self.single_details_region_of_birth_mode.get() == "custom":
-                sel = self.single_details_region_of_birth_value.get().strip()
-                if sel:
-                    ids = self._get_fixed_ids("nation", sel)
-                    if ids:
-                        extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
-                    else:
-                        messagebox.showerror("Region Of Birth", "Custom Region Of Birth currently maps to Nation and must be selected from the master_library nation list.")
-                        return
         except Exception:
             pass
 
@@ -3732,6 +4437,53 @@ class App(tk.Tk):
         )
 
     # ---------------- Shared generator runner ----------------
+
+
+    def _generator_script_supports_flag(self, script_path: str, flag: str) -> bool:
+        try:
+            txt = Path(script_path).read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return True  # don't block if unreadable
+        return (flag in txt)
+
+    def _strip_unsupported_cli_flags(self, script_path: str, args: list[str]) -> list[str]:
+        """
+        Drop GUI flags that older generator scripts do not support, so generation still runs.
+        We keep a log warning telling the user which fields were skipped.
+        """
+        if not args:
+            return []
+        # flags that take a following value
+        value_flags = [
+            "--omit-field",
+            "--first_international_goal_date",
+            "--first_international_goal_against",
+            "--other_nation_caps_json",
+            "--other_nation_youth_caps_json",
+        ]
+        unsupported = {f for f in value_flags if not self._generator_script_supports_flag(script_path, f)}
+        if not unsupported:
+            return list(args)
+
+        out: list[str] = []
+        i = 0
+        while i < len(args):
+            a = str(args[i])
+            if a in unsupported:
+                skipped = [a]
+                if i + 1 < len(args):
+                    skipped.append(str(args[i + 1]))
+                    i += 2
+                else:
+                    i += 1
+                try:
+                    self._log(f"[WARN] Selected generator script does not support {a}; skipping this GUI option.\n")
+                except Exception:
+                    pass
+                continue
+            out.append(args[i])
+            i += 1
+        return out
 
     def _run_generator_common(
         self,
@@ -3797,14 +4549,23 @@ class App(tk.Tk):
             "--surnames", surn,
             "--count", count,
             "--output", out_path,
-            "--age_min", age_min,
-            "--age_max", age_max,
-            "--ca_min", ca_min,
-            "--ca_max", ca_max,
-            "--pa_min", pa_min,
-            "--pa_max", pa_max,
-            "--base_year", base_year,
         ]
+        if str(age_min or "").strip() != "":
+            cmd.extend(["--age_min", str(age_min).strip()])
+        if str(age_max or "").strip() != "":
+            cmd.extend(["--age_max", str(age_max).strip()])
+
+        _extra_scan = [str(x).strip().lower() for x in (extra_args or [])]
+        _omit_fields = set()
+        for i in range(len(_extra_scan) - 1):
+            if _extra_scan[i] == "--omit-field":
+                _omit_fields.add(_extra_scan[i + 1])
+
+        if "ca" not in _omit_fields:
+            cmd.extend(["--ca_min", ca_min, "--ca_max", ca_max])
+        if "pa" not in _omit_fields:
+            cmd.extend(["--pa_min", pa_min, "--pa_max", pa_max])
+        cmd.extend(["--base_year", base_year])
         if female_first:
             cmd.extend(["--female_first_names", female_first])
         if common_names:
@@ -3812,6 +4573,7 @@ class App(tk.Tk):
         if seed:
             cmd.extend(["--seed", seed])
         if extra_args:
+            extra_args = self._strip_unsupported_cli_flags(script_path, list(extra_args))
             cmd.extend([x for x in extra_args if x is not None and str(x) != ""])
 
         self._run_async_stream(title, cmd, must_create=out_path)
