@@ -2277,9 +2277,10 @@ def generate_players_xml(
             push(_rec(_attr(person_uid, PROP_SQUAD_STATUS, _int("new_value", squad_status_val), rid("rid|squad"), version, odvl=_null("odvl")), "Squad status"), "squad_status")
         push(_rec(_attr(person_uid, PROP_CA, _int("new_value", ca), rid("rid|ca"), version, odvl=odvl0), "CA"), "ca", "ca_min", "ca_max")
         push(_rec(_attr(person_uid, PROP_PA, _int("new_value", pa), rid("rid|pa"), version, odvl=odvl0), "PA"), "pa", "pa_min", "pa_max")
-        push(_rec(_attr(person_uid, PROP_CURRENT_REP, _int("new_value", rep_cur), rid("rid|rep"), version, odvl=odvl0), "Current rep"), "rep_current", "rep_min", "rep_max")
-        push(_rec(_attr(person_uid, PROP_HOME_REP, _int("new_value", rep_home_v), rid("rid|rep_home"), version, odvl=odvl0), "Home rep"), "rep_home", "rep_min", "rep_max")
-        push(_rec(_attr(person_uid, PROP_WORLD_REP, _int("new_value", rep_world_v), rid("rid|rep_world"), version, odvl=odvl0), "World rep"), "rep_world", "rep_min", "rep_max")
+        # Reputation: GUI uses "omit-field reputation" for Don’t set, so treat it as a group alias.
+        push(_rec(_attr(person_uid, PROP_CURRENT_REP, _int("new_value", rep_cur), rid("rid|rep"), version, odvl=odvl0), "Current rep"), "reputation", "rep", "rep_current", "rep_min", "rep_max")
+        push(_rec(_attr(person_uid, PROP_HOME_REP, _int("new_value", rep_home_v), rid("rid|rep_home"), version, odvl=odvl0), "Home rep"), "reputation", "rep", "rep_home", "rep_min", "rep_max")
+        push(_rec(_attr(person_uid, PROP_WORLD_REP, _int("new_value", rep_world_v), rid("rid|rep_world"), version, odvl=odvl0), "World rep"), "reputation", "rep", "rep_world", "rep_min", "rep_max")
         push(_rec(_attr(person_uid, PROP_LEFT_FOOT, _str("new_value", str(left)), rid("rid|lf"), version, odvl=odvl0), "Left foot"), "feet", "left_foot")
         push(_rec(_attr(person_uid, PROP_RIGHT_FOOT, _str("new_value", str(right)), rid("rid|rf"), version, odvl=odvl0), "Right foot"), "feet", "right_foot")
         push(_rec(_attr(person_uid, PROP_TRANSFER_VALUE, _int("new_value", tv), rid("rid|tv"), version, odvl=odvl0), "Transfer value"), "transfer_value", "transfer_mode", "transfer_min", "transfer_max")
