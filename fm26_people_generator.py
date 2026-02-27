@@ -27,7 +27,7 @@ import os
 import random
 import re
 import sys
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from xml.sax.saxutils import escape as xesc
 
 # ---- FM property numbers (keep stable) ----
@@ -66,12 +66,6 @@ PROP_INTERNATIONAL_DEBUT_DATE = 1349084260
 PROP_INTERNATIONAL_DEBUT_AGAINST = 1346978927
 PROP_U21_INTERNATIONAL_DEBUT_DATE = 1349085028
 PROP_U21_INTERNATIONAL_DEBUT_AGAINST = 1346979695
-# First international goal against (per FM26 editor export)
-PROP_FIRST_INTERNATIONAL_GOAL_AGAINST = 1346979695
-# Other Nation Caps / Goals (senior + U21) (per FM26 editor export)
-PROP_OTHER_NATION_CAPS = 1349480035
-PROP_U21_OTHER_NATION_CAPS = 1349480057
-
 PROP_RETIRING_AFTER_SPELL_CURRENT_CLUB = 1349741682
 PROP_WAGE = 1348695911
 PROP_DATE_MOVED_TO_NATION = 1346588266
@@ -1229,8 +1223,15 @@ def _date(i: str, d: dt.date) -> str:
     return f'<date id="{i}" day="{d.day}" month="{d.month}" year="{d.year}" time="0"/>'
 
 
+_XML_COMMENTS = False
+
 def _rec(inner: str, comment: str = "") -> str:
-    c = f'<!-- {comment} -->' if comment else ""
+    """Wrap a record.
+
+    By default we do NOT emit XML comments to keep files smaller/faster to import.
+    Enable with --xml_comments.
+    """
+    c = f'<!-- {comment} -->' if (_XML_COMMENTS and comment) else ""
     return f"\t\t<record>{c}\n{inner}\t\t</record>\n"
 
 
@@ -1307,7 +1308,7 @@ def _create(create_uid: int, person_uid: int, rid: int, ver: int) -> str:
     inner += f"\t\t\t{_int('version', ver)}\n"
     inner += f"\t\t\t{_int('db_random_id', rid)}\n"
     inner += f"\t\t\t{_bool('is_client_field', True)}\n"
-    return _rec(inner, "Required per player record")
+    return _rec(inner)
 
 
 def _count_existing(xml_path: str) -> int:
@@ -1375,6 +1376,7 @@ def generate_players_xml(
     height_min: int = 150,
     height_max: int = 210,
     fixed_club: Optional[Tuple[int, int]] = None,
+    club_assign_pct: int = 100,
     fixed_city: Optional[Tuple[int, int]] = None,
     fixed_nation: Optional[Tuple[int, int]] = None,
     # legacy positions (kept for backwards compatibility)
@@ -1414,8 +1416,6 @@ def generate_players_xml(
     u21_international_debut_against_name: Optional[str] = None,
     first_international_goal_date: Optional[dt.date] = None,
     first_international_goal_against_name: Optional[str] = None,
-    other_nation_caps_json: str = "",
-    other_nation_youth_caps_json: str = "",
     nationality_info_value: Optional[int] = None,
     second_nation_specs: Optional[List[str]] = None,
     declared_for_youth_nation_name: Optional[str] = None,
@@ -1527,8 +1527,13 @@ def generate_players_xml(
 
     _omit_fields = _norm_omit_fields(omit_fields)
     def _is_omitted(*names: str) -> bool:
+        # Support group aliases from GUI (e.g. --omit-field reputation)
+        rep_group = {"rep_current", "rep_home", "rep_world"}
         for _name in names:
-            if str(_name).strip().lower().replace(" ", "_").replace("-", "_") in _omit_fields:
+            n = str(_name).strip().lower().replace(" ", "_").replace("-", "_")
+            if n in _omit_fields:
+                return True
+            if n in rep_group and "reputation" in _omit_fields:
                 return True
         return False
 
@@ -1590,53 +1595,6 @@ def generate_players_xml(
     nation_lookup = _build_nation_lookup(nations)
     nation_name_by_key = {(n[0], n[1]): (n[2] if len(n) > 2 else "") for n in nations}
     parsed_second_nations = _parse_second_nation_specs(second_nation_specs, nation_lookup)
-
-    def _parse_caps_payload(payload: str, label: str) -> List[Dict[str, Any]]:
-        s = (payload or "").strip()
-        if not s or s == "__NONE__":
-            return []
-        try:
-            data = json.loads(s)
-        except Exception as e:
-            print(f"[WARN] {label}: invalid JSON, ignoring. Error: {e}", file=sys.stderr)
-            return []
-        if isinstance(data, dict):
-            data = [data]
-        if not isinstance(data, list):
-            print(f"[WARN] {label}: expected a list of objects, got {type(data).__name__}. Ignoring.", file=sys.stderr)
-            return []
-        out: List[Dict[str, Any]] = []
-        for it in data:
-            if isinstance(it, dict):
-                out.append(it)
-        return out
-
-    def _resolve_caps_payload(payload: str, label: str) -> List[Tuple[str, int, int, int, int, str]]:
-        raw = _parse_caps_payload(payload, label)
-        resolved: List[Tuple[str, int, int, int, int, str]] = []
-        for it in raw:
-            name = str(it.get("nation") or it.get("Nation") or it.get("name") or "").strip()
-            if not name or name == "__NONE__":
-                continue
-            try:
-                apps = int(it.get("apps", it.get("caps", it.get("cap", 0))) or 0)
-            except Exception:
-                apps = 0
-            try:
-                goals = int(it.get("goals", it.get("goal", 0)) or 0)
-            except Exception:
-                goals = 0
-            found = _resolve_nation_from_lookup(name, nation_lookup)
-            if not found:
-                print(f"[WARN] {label}: nation not found in master_library: {name!r} (skipping).", file=sys.stderr)
-                continue
-            dbid, large = int(found[0]), int(found[1])
-            key = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:40] or "nation"
-            resolved.append((name, dbid, large, apps, goals, key))
-        return resolved
-
-    other_nation_caps_resolved = _resolve_caps_payload(other_nation_caps_json, "other_nation_caps_json")
-    other_nation_youth_caps_resolved = _resolve_caps_payload(other_nation_youth_caps_json, "other_nation_youth_caps_json")
 
     international_debut_against = None
     if international_debut_against_name:
@@ -2062,190 +2020,7 @@ def generate_players_xml(
             )
             push(_rec(_attr(person_uid, PROP_U21_INTERNATIONAL_DEBUT_AGAINST, _u21da_newv, rid("rid|u21_international_debut_against"), version, odvl=_null("odvl")), "U21 International debut against"), "u21_international_debut_against", "u21_international_debut_against_name")
 
-        # first international goal against (nation)
-        if (not _is_omitted('first_international_goal_against','first_international_goal_against_name')) and _first_goal_against_eff_player is not None:
-            _fg_dbid, _fg_large = _first_goal_against_eff_player
-            _fg_newv = (
-                "<record id=\"new_value\">\n"
-                + f'\t\t\t\t{_large("Nnat", int(_fg_large))}\n'
-                + f'\t\t\t\t{_int("DBID", int(_fg_dbid))}\n'
-                + "\t\t\t</record>"
-            )
-            push(_rec(_attr(person_uid, PROP_FIRST_INTERNATIONAL_GOAL_AGAINST, _fg_newv, rid("rid|first_international_goal_against"), version, odvl=_null("odvl")), "First international goal against"), "first_international_goal_against", "first_international_goal_against_name")
-
-                # other nation caps/goals (senior)
-        # Correct FM26 editor pattern per entry:
-        #   1) <lsop=0> to create/append a list slot
-        #   2) id=1851880553 identity row (Nnat+DBID)
-        #   3) id=1667330163 caps row (value=caps)
-        #   4) id=1735352684 goals row (value=goals)
-        if other_nation_caps_resolved and not _is_omitted("other_nation_caps", "other_nation_caps_json"):
-            for _j, (_on_name, _on_dbid, _on_large, _on_caps, _on_goals, _on_key) in enumerate(other_nation_caps_resolved):
-                _slot_newv = "<record id=\"new_value\">\n\t\t\t\t" + _int("lsop", 0) + "\n\t\t\t</record>"
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_OTHER_NATION_CAPS, _slot_newv, rid(f"rid|other_nation_caps|slot|{_j}|{_on_key}"), version),
-                        f"Other nation {_on_name} slot",
-                    ),
-                    "other_nation_caps",
-                    "other_nation_caps_json",
-                )
-
-                _id_newv = (
-                    "<record id=\"new_value\">\n"
-                    + f'\t\t\t\t{_uns("id", 1851880553)}\n'
-                    + "\t\t\t\t<record id=\"value\">\n"
-                    + f'\t\t\t\t\t{_large("Nnat", int(_on_large))}\n'
-                    + f'\t\t\t\t\t{_int("DBID", int(_on_dbid))}\n'
-                    + "\t\t\t\t</record>\n"
-                    + f'\t\t\t\t{_int("lsop", 1)}\n'
-                    + "\t\t\t\t<record id=\"olvl\">\n"
-                    + f'\t\t\t\t\t{_int("caps", 0)}\n'
-                    + f'\t\t\t\t\t{_int("goal", 0)}\n'
-                    + f'\t\t\t\t\t{_null("nation")}\n'
-                    + "\t\t\t\t</record>\n"
-                    + "\t\t\t</record>"
-                )
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_OTHER_NATION_CAPS, _id_newv, rid(f"rid|other_nation_caps|id|{_j}|{_on_key}"), version),
-                        f"Other nation {_on_name} identity",
-                    ),
-                    "other_nation_caps",
-                    "other_nation_caps_json",
-                )
-
-                _caps_newv = (
-                    "<record id=\"new_value\">\n"
-                    + f'\t\t\t\t{_uns("id", 1667330163)}\n'
-                    + f'\t\t\t\t{_int("value", int(_on_caps))}\n'
-                    + f'\t\t\t\t{_int("lsop", 1)}\n'
-                    + "\t\t\t\t<record id=\"olvl\">\n"
-                    + f'\t\t\t\t\t{_int("caps", 0)}\n'
-                    + f'\t\t\t\t\t{_int("goal", 0)}\n'
-                    + "\t\t\t\t\t<record id=\"nation\">\n"
-                    + f'\t\t\t\t\t\t{_large("Nnat", int(_on_large))}\n'
-                    + "\t\t\t\t\t</record>\n"
-                    + "\t\t\t\t</record>\n"
-                    + "\t\t\t</record>"
-                )
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_OTHER_NATION_CAPS, _caps_newv, rid(f"rid|other_nation_caps|caps|{_j}|{_on_key}"), version),
-                        f"Other nation {_on_name} caps",
-                    ),
-                    "other_nation_caps",
-                    "other_nation_caps_json",
-                )
-
-                _goals_newv = (
-                    "<record id=\"new_value\">\n"
-                    + f'\t\t\t\t{_uns("id", 1735352684)}\n'
-                    + f'\t\t\t\t{_int("value", int(_on_goals))}\n'
-                    + f'\t\t\t\t{_int("lsop", 1)}\n'
-                    + "\t\t\t\t<record id=\"olvl\">\n"
-                    + f'\t\t\t\t\t{_int("caps", int(_on_caps))}\n'
-                    + f'\t\t\t\t\t{_int("goal", 0)}\n'
-                    + "\t\t\t\t\t<record id=\"nation\">\n"
-                    + f'\t\t\t\t\t\t{_large("Nnat", int(_on_large))}\n'
-                    + "\t\t\t\t\t</record>\n"
-                    + "\t\t\t\t</record>\n"
-                    + "\t\t\t</record>"
-                )
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_OTHER_NATION_CAPS, _goals_newv, rid(f"rid|other_nation_caps|goals|{_j}|{_on_key}"), version),
-                        f"Other nation {_on_name} goals",
-                    ),
-                    "other_nation_caps",
-                    "other_nation_caps_json",
-                )
-
-        # other nation caps/goals (U21)
-        # Same pattern as senior other nations, but uses PROP_U21_OTHER_NATION_CAPS
-        if other_nation_youth_caps_resolved and not _is_omitted("other_nation_youth_caps", "other_nation_youth_caps_json"):
-            for _j, (_on_name, _on_dbid, _on_large, _on_caps, _on_goals, _on_key) in enumerate(other_nation_youth_caps_resolved):
-                _slot_newv = "<record id=\"new_value\">\n\t\t\t\t" + _int("lsop", 0) + "\n\t\t\t</record>"
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_U21_OTHER_NATION_CAPS, _slot_newv, rid(f"rid|u21_other_nation_caps|slot|{_j}|{_on_key}"), version),
-                        f"U21 other nation {_on_name} slot",
-                    ),
-                    "other_nation_youth_caps",
-                    "other_nation_youth_caps_json",
-                )
-
-                _id_newv = (
-                    "<record id=\"new_value\">\n"
-                    + f'\t\t\t\t{_uns("id", 1851880553)}\n'
-                    + "\t\t\t\t<record id=\"value\">\n"
-                    + f'\t\t\t\t\t{_large("Nnat", int(_on_large))}\n'
-                    + f'\t\t\t\t\t{_int("DBID", int(_on_dbid))}\n'
-                    + "\t\t\t\t</record>\n"
-                    + f'\t\t\t\t{_int("lsop", 1)}\n'
-                    + "\t\t\t\t<record id=\"olvl\">\n"
-                    + f'\t\t\t\t\t{_int("caps", 0)}\n'
-                    + f'\t\t\t\t\t{_int("goal", 0)}\n'
-                    + f'\t\t\t\t\t{_null("nation")}\n'
-                    + "\t\t\t\t</record>\n"
-                    + "\t\t\t</record>"
-                )
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_U21_OTHER_NATION_CAPS, _id_newv, rid(f"rid|u21_other_nation_caps|id|{_j}|{_on_key}"), version),
-                        f"U21 other nation {_on_name} identity",
-                    ),
-                    "other_nation_youth_caps",
-                    "other_nation_youth_caps_json",
-                )
-
-                _caps_newv = (
-                    "<record id=\"new_value\">\n"
-                    + f'\t\t\t\t{_uns("id", 1667330163)}\n'
-                    + f'\t\t\t\t{_int("value", int(_on_caps))}\n'
-                    + f'\t\t\t\t{_int("lsop", 1)}\n'
-                    + "\t\t\t\t<record id=\"olvl\">\n"
-                    + f'\t\t\t\t\t{_int("caps", 0)}\n'
-                    + f'\t\t\t\t\t{_int("goal", 0)}\n'
-                    + "\t\t\t\t\t<record id=\"nation\">\n"
-                    + f'\t\t\t\t\t\t{_large("Nnat", int(_on_large))}\n'
-                    + "\t\t\t\t\t</record>\n"
-                    + "\t\t\t\t</record>\n"
-                    + "\t\t\t</record>"
-                )
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_U21_OTHER_NATION_CAPS, _caps_newv, rid(f"rid|u21_other_nation_caps|caps|{_j}|{_on_key}"), version),
-                        f"U21 other nation {_on_name} caps",
-                    ),
-                    "other_nation_youth_caps",
-                    "other_nation_youth_caps_json",
-                )
-
-                _goals_newv = (
-                    "<record id=\"new_value\">\n"
-                    + f'\t\t\t\t{_uns("id", 1735352684)}\n'
-                    + f'\t\t\t\t{_int("value", int(_on_goals))}\n'
-                    + f'\t\t\t\t{_int("lsop", 1)}\n'
-                    + "\t\t\t\t<record id=\"olvl\">\n"
-                    + f'\t\t\t\t\t{_int("caps", int(_on_caps))}\n'
-                    + f'\t\t\t\t\t{_int("goal", 0)}\n'
-                    + "\t\t\t\t\t<record id=\"nation\">\n"
-                    + f'\t\t\t\t\t\t{_large("Nnat", int(_on_large))}\n'
-                    + "\t\t\t\t\t</record>\n"
-                    + "\t\t\t\t</record>\n"
-                    + "\t\t\t</record>"
-                )
-                push(
-                    _rec(
-                        _attr(person_uid, PROP_U21_OTHER_NATION_CAPS, _goals_newv, rid(f"rid|u21_other_nation_caps|goals|{_j}|{_on_key}"), version),
-                        f"U21 other nation {_on_name} goals",
-                    ),
-                    "other_nation_youth_caps",
-                    "other_nation_youth_caps_json",
-                )
-
-# optional international retirement / nationality metadata
+        # optional international retirement / nationality metadata
         if bool(international_retirement) and not _is_omitted("international_retirement"):
             push(_rec(_attr(person_uid, PROP_INTERNATIONAL_RETIREMENT, _bool("new_value", True), rid("rid|intl_ret"), version, odvl=_bool("odvl", False)), "International Retirement"), "international_retirement")
         if international_retirement_date is not None and not _is_omitted("international_retirement_date"):
@@ -2253,44 +2028,33 @@ def generate_players_xml(
         if bool(retiring_after_spell_current_club) and not _is_omitted("retiring_after_spell_current_club"):
             push(_rec(_attr(person_uid, PROP_RETIRING_AFTER_SPELL_CURRENT_CLUB, _bool("new_value", True), rid("rid|intl_ret_end_season"), version, odvl=_bool("odvl", False)), "International Retirement end of club season"), "retiring_after_spell_current_club")
 
-        # club record
-        newv = (
-            '<record id="new_value">\n'
-            + f'\t\t\t\t{_large("Ttea", club_large)}\n'
-            + f'\t\t\t\t{_int("DBID", club_dbid)}\n'
-            + "\t\t\t</record>"
-        )
-        push(_rec(_attr(person_uid, CLUB_PROPERTY, newv, rid("rid|club"), version, odvl=_null("odvl")), "Club"), "club", "club_dbid", "club_large")
+        # club record (clean v16)
+        # - if club is omitted => no record emitted (free agent)
+        # - otherwise emit club record only club_assign_pct% of the time
+        if not _is_omitted('club','club_dbid','club_large'):
+            _pct = 100
+            try:
+                _pct = int(club_assign_pct)
+            except Exception:
+                _pct = 100
+            if _pct < 0:
+                _pct = 0
+            if _pct > 100:
+                _pct = 100
 
-        # other ints/dates (respect omit-fields)
-        if not _is_omitted("wage","wage_min","wage_max"):
-            push(_rec(_attr(person_uid, PROP_WAGE, _int("new_value", wage_val), rid("rid|wage"), version, odvl=odvl0), "Wage"), "wage", "wage_min", "wage_max")
-        if not _is_omitted("moved_to_nation_date"):
-            push(_rec(_attr(person_uid, PROP_DATE_MOVED_TO_NATION, _date("new_value", moved_to_nation), rid("rid|moved"), version, odvl=odvl_date), "Moved to nation"), "moved_to_nation_date")
-        if not _is_omitted("joined_club_date"):
-            push(_rec(_attr(person_uid, PROP_DATE_JOINED_CLUB, _date("new_value", joined), rid("rid|joined"), version, odvl=odvl_date), "Joined club"), "joined_club_date")
-        if not _is_omitted("date_last_signed","last_signed"):
-            push(_rec(_attr(person_uid, PROP_DATE_LAST_SIGNED, _date("new_value", last_signed), rid("rid|signed"), version, odvl=odvl_date), "Last signed"), "date_last_signed", "last_signed")
-        if not _is_omitted("contract_expires_date"):
-            push(_rec(_attr(person_uid, PROP_CONTRACT_EXPIRES, _date("new_value", expires), rid("rid|expires"), version, odvl=odvl_date), "Contract expires"), "contract_expires_date")
-        if not _is_omitted("squad_status"):
-            push(_rec(_attr(person_uid, PROP_SQUAD_STATUS, _int("new_value", squad_status_val), rid("rid|squad"), version, odvl=_null("odvl")), "Squad status"), "squad_status")
-        push(_rec(_attr(person_uid, PROP_CA, _int("new_value", ca), rid("rid|ca"), version, odvl=odvl0), "CA"), "ca", "ca_min", "ca_max")
-        push(_rec(_attr(person_uid, PROP_PA, _int("new_value", pa), rid("rid|pa"), version, odvl=odvl0), "PA"), "pa", "pa_min", "pa_max")
-        # Reputation: GUI uses "omit-field reputation" for Don’t set, so treat it as a group alias.
-        push(_rec(_attr(person_uid, PROP_CURRENT_REP, _int("new_value", rep_cur), rid("rid|rep"), version, odvl=odvl0), "Current rep"), "reputation", "rep", "rep_current", "rep_min", "rep_max")
-        push(_rec(_attr(person_uid, PROP_HOME_REP, _int("new_value", rep_home_v), rid("rid|rep_home"), version, odvl=odvl0), "Home rep"), "reputation", "rep", "rep_home", "rep_min", "rep_max")
-        push(_rec(_attr(person_uid, PROP_WORLD_REP, _int("new_value", rep_world_v), rid("rid|rep_world"), version, odvl=odvl0), "World rep"), "reputation", "rep", "rep_world", "rep_min", "rep_max")
-        push(_rec(_attr(person_uid, PROP_LEFT_FOOT, _str("new_value", str(left)), rid("rid|lf"), version, odvl=odvl0), "Left foot"), "feet", "left_foot")
-        push(_rec(_attr(person_uid, PROP_RIGHT_FOOT, _str("new_value", str(right)), rid("rid|rf"), version, odvl=odvl0), "Right foot"), "feet", "right_foot")
-        push(_rec(_attr(person_uid, PROP_TRANSFER_VALUE, _int("new_value", tv), rid("rid|tv"), version, odvl=odvl0), "Transfer value"), "transfer_value", "transfer_mode", "transfer_min", "transfer_max")
+            if club_dbid and club_large:
+                _emit = True
+                if _pct < 100:
+                    _emit = (rng.random() < (float(_pct) / 100.0))
 
-        # positions output
-        if not _is_omitted("positions","position","pos","pos_primary","pos_20","pos_dev","pos_dev_mode","pos_dev_value","pos_dev_min","pos_dev_max"):
-            for code in ALL_POS:
-                v = pos_map.get(code, 1)
-                frags.append(_rec(_attr(person_uid, POS_PROPS[code], _int("new_value", v), rid(f"rid|pos|{code}"), version), code))
-
+                if _emit:
+                    newv = (
+                        '<record id="new_value">\n'
+                        + f'\t\t\t\t{_large("Ttea", club_large)}\n'
+                        + f'\t\t\t\t{_int("DBID", club_dbid)}\n'
+                        + "\t\t\t</record>"
+                    )
+                    push(_rec(_attr(person_uid, CLUB_PROPERTY, newv, rid("rid|club"), version, odvl=_null("odvl")), "Club"), "club", "club_dbid", "club_large")
     frag = "".join(frags)
 
     if append and os.path.exists(out_xml):
@@ -2334,6 +2098,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--id_registry_path", default=None)
     ap.add_argument("--id_namespace_salt", default=None)
     ap.add_argument("--omit-field", action="append", default=[], help="Field key to omit entirely (repeatable). Used by GUI Don\'t set modes.")
+    ap.add_argument("--xml_comments", action="store_true", default=False, help="Include XML comments (larger files). Default: off")
     ap.add_argument("--version", type=int, default=DEFAULT_VERSION)
 
     ap.add_argument("--dob", default="")
@@ -2382,6 +2147,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # fixed club/city/nation
     ap.add_argument("--club_dbid", type=int, default=0)
     ap.add_argument("--club_large", type=int, default=0)
+    ap.add_argument("--club_assign_pct", type=int, default=100, help="When --club_dbid/--club_large is used, assign that club to only this percent of people (rest become free agents).")
     ap.add_argument("--city_dbid", type=int, default=0)
     ap.add_argument("--city_large", type=int, default=0)
     ap.add_argument("--nation_dbid", type=int, default=0)
@@ -2422,8 +2188,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--u21_international_debut_against", default="", help="U21 International debut against nation name")
     ap.add_argument("--first_international_goal_date", default="", help="First international goal date (YYYY-MM-DD) [GUI compatibility]")
     ap.add_argument("--first_international_goal_against", default="", help="First international goal against nation name [GUI compatibility]")
-    ap.add_argument("--other_nation_caps_json", default="", help="Other nation caps/goals JSON: [{\"nation\":\"Spain\",\"apps\":1,\"goals\":0}, ...]")
-    ap.add_argument("--other_nation_youth_caps_json", default="", help="U21 other nation caps/goals JSON: [{\"nation\":\"Brazil\",\"apps\":4,\"goals\":1}, ...]")
+    ap.add_argument("--other_nation_caps_json", default="", help="Reserved GUI payload (not yet written to XML; accepted for compatibility)")
+    ap.add_argument("--other_nation_youth_caps_json", default="", help="Reserved GUI payload (not yet written to XML; accepted for compatibility)")
     ap.add_argument("--first_names", default="male_first_names.csv")
     ap.add_argument("--female_first_names", default="female_first_names.csv")
     ap.add_argument("--common_names", default="common_names.csv")
@@ -2444,6 +2210,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         for a in _argv_for_parse
     )
     args = ap.parse_args(_argv_for_parse)
+
+    # Toggle XML comments (default off)
+    global _XML_COMMENTS
+    try:
+        _XML_COMMENTS = bool(getattr(args, "xml_comments", False))
+    except Exception:
+        _XML_COMMENTS = False
     # Compatibility aliases for GUI variants:
     # - some versions pass --second_name_text
     # - others pass --last_name_text
@@ -2505,6 +2278,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     international_debut_date = None if (str(args.international_debut_date).strip() in ('', '__NONE__')) else _parse_ymd(args.international_debut_date)
     u21_international_debut_date = None if (str(args.u21_international_debut_date).strip() in ('', '__NONE__')) else _parse_ymd(args.u21_international_debut_date)
     first_international_goal_date = None if (str(getattr(args, 'first_international_goal_date', '')).strip() in ('', '__NONE__')) else _parse_ymd(getattr(args, 'first_international_goal_date'))
+    if str(getattr(args, 'other_nation_caps_json', '') or '').strip():
+        print("[WARN] --other_nation_caps_json accepted for GUI compatibility but not yet written to XML in this build.", file=sys.stderr)
+    if str(getattr(args, 'other_nation_youth_caps_json', '') or '').strip():
+        print("[WARN] --other_nation_youth_caps_json accepted for GUI compatibility but not yet written to XML in this build.", file=sys.stderr)
 
     fixed_height = args.height if args.height else None
     height_min = int(args.height_min)
@@ -2591,6 +2368,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             height_min=height_min,
             height_max=height_max,
             fixed_club=fixed_club,
+            club_assign_pct=args.club_assign_pct,
             fixed_city=fixed_city,
             fixed_nation=fixed_nation,
             fixed_positions=fixed_positions,
@@ -2627,8 +2405,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             u21_international_debut_against_name=(args.u21_international_debut_against or None),
             first_international_goal_date=first_international_goal_date,
             first_international_goal_against_name=(getattr(args, "first_international_goal_against", "") or None),
-            other_nation_caps_json=(getattr(args, "other_nation_caps_json", "") or ""),
-            other_nation_youth_caps_json=(getattr(args, "other_nation_youth_caps_json", "") or ""),
             nationality_info_value=nationality_info_value_resolved,
             second_nation_specs=list(getattr(args, "second_nation", []) or []),
             international_retirement=bool(args.international_retirement),

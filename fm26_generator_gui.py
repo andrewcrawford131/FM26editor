@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import sys
 import csv
+import re
 import threading
 import subprocess
 import calendar as _cal
@@ -31,6 +32,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 APP_TITLE = "FM26 Generator"
+GUI_BUILD = "v65.10-unified-nationfix-jobs-tabs-2026-02-26"
 DEFAULT_EXTRACT_SCRIPT = "fm26_db_extractor.py"
 DEFAULT_GENERATE_SCRIPT = "fm26_people_generator.py"
 DEFAULT_XML_APPENDER_SCRIPT = "fm26_xml_appender.py"
@@ -266,7 +268,7 @@ class DateInput(ttk.Frame):
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title(APP_TITLE)
+        self.title(f"{APP_TITLE} [{GUI_BUILD}]")
         self.geometry("1060x720")
         self.minsize(980, 620)
 
@@ -279,6 +281,8 @@ class App(tk.Tk):
 
         self.btn_toggle_output = ttk.Button(topbar, text="Show Output", command=self._toggle_output)
         self.btn_toggle_output.pack(side="left", padx=(8, 0))
+        self.btn_copy_output = ttk.Button(topbar, text="Copy Output", command=self._copy_output)
+        self.btn_copy_output.pack(side="left", padx=(8, 0))
 
         ttk.Label(topbar, text="(Clean view by default — reveal only when needed)").pack(side="left", padx=(12, 0))
 
@@ -311,6 +315,8 @@ class App(tk.Tk):
 
         self.notebook.add(self.extract_tab, text="Extractor (Cities,Clubs,Nations and Regions)")
         self.notebook.add(self.appender_tab, text="XML Appender")
+        self.settings_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.settings_tab, text="Settings")
         self.notebook.add(self.gen_tab, text="People")
 
         # People -> Player / Non-player
@@ -319,8 +325,11 @@ class App(tk.Tk):
 
         self.player_people_tab = ttk.Frame(self.people_kind_notebook)
         self.nonplayer_people_tab = ttk.Frame(self.people_kind_notebook)
+        self.player_nonplayer_people_tab = ttk.Frame(self.people_kind_notebook)
+
         self.people_kind_notebook.add(self.player_people_tab, text="Player")
         self.people_kind_notebook.add(self.nonplayer_people_tab, text="Non-player")
+        self.people_kind_notebook.add(self.player_nonplayer_people_tab, text="Player/Non-Player")
 
         # Player -> Batch / Single Person
         self.players_notebook = ttk.Notebook(self.player_people_tab)
@@ -355,7 +364,7 @@ class App(tk.Tk):
         self.player_single_notebook.add(self.single_international_tab, text="International Data")
         self.player_single_notebook.add(self.single_contract_tab, text="Contract")
 
-        # Non-player scaffolding tabs (requested layout)
+        # Non-player scaffolding tabs (Batch/Single) — no "Other" tab
         self.nonplayer_modes_notebook = ttk.Notebook(self.nonplayer_people_tab)
         self.nonplayer_modes_notebook.pack(fill="both", expand=True)
 
@@ -366,27 +375,92 @@ class App(tk.Tk):
 
         self.nonplayer_batch_notebook = ttk.Notebook(self.nonplayer_batch_parent)
         self.nonplayer_batch_notebook.pack(fill="both", expand=True)
-        self.nonplayer_batch_other_tab = ttk.Frame(self.nonplayer_batch_notebook)
-        self.nonplayer_batch_details_tab = ttk.Frame(self.nonplayer_batch_notebook)
-        self.nonplayer_batch_notebook.add(self.nonplayer_batch_other_tab, text="Other")
-        self.nonplayer_batch_notebook.add(self.nonplayer_batch_details_tab, text="Details")
+        self.nonplayer_batch_contract_tab = ttk.Frame(self.nonplayer_batch_notebook)
+        self.nonplayer_batch_international_tab = ttk.Frame(self.nonplayer_batch_notebook)
+        self.nonplayer_batch_notebook.add(self.nonplayer_batch_contract_tab, text="Contract")
+        self.nonplayer_batch_notebook.add(self.nonplayer_batch_international_tab, text="International Data")
 
         self.nonplayer_single_notebook = ttk.Notebook(self.nonplayer_single_parent)
         self.nonplayer_single_notebook.pack(fill="both", expand=True)
-        self.nonplayer_single_other_tab = ttk.Frame(self.nonplayer_single_notebook)
-        self.nonplayer_single_details_tab = ttk.Frame(self.nonplayer_single_notebook)
-        self.nonplayer_single_notebook.add(self.nonplayer_single_other_tab, text="Other")
-        self.nonplayer_single_notebook.add(self.nonplayer_single_details_tab, text="Details")
+        self.nonplayer_single_contract_tab = ttk.Frame(self.nonplayer_single_notebook)
+        self.nonplayer_single_international_tab = ttk.Frame(self.nonplayer_single_notebook)
+        self.nonplayer_single_notebook.add(self.nonplayer_single_contract_tab, text="Contract")
+        self.nonplayer_single_notebook.add(self.nonplayer_single_international_tab, text="International Data")
 
-        for _parent, _msg in (
-            (self.nonplayer_batch_other_tab, "Non-player batch controls tab scaffolded.\n(Generator wiring can be added next.)"),
-            (self.nonplayer_batch_details_tab, "Non-player details tab scaffolded.\nPerson Type selector removed by design."),
-            (self.nonplayer_single_other_tab, "Non-player single-person controls tab scaffolded.\n(Generator wiring can be added next.)"),
-            (self.nonplayer_single_details_tab, "Non-player details tab scaffolded.\nPerson Type selector removed by design."),
-        ):
-            wrap = ttk.Frame(_parent, padding=16)
+        # Player/Non-Player scaffolding tabs (hybrid roles like Player/Coach, Player/Chairperson)
+        self.player_nonplayer_modes_notebook = ttk.Notebook(self.player_nonplayer_people_tab)
+        self.player_nonplayer_modes_notebook.pack(fill="both", expand=True)
+
+        self.player_nonplayer_batch_parent = ttk.Frame(self.player_nonplayer_modes_notebook)
+        self.player_nonplayer_single_parent = ttk.Frame(self.player_nonplayer_modes_notebook)
+        self.player_nonplayer_modes_notebook.add(self.player_nonplayer_batch_parent, text="Batch")
+        self.player_nonplayer_modes_notebook.add(self.player_nonplayer_single_parent, text="Single Person")
+
+        self.player_nonplayer_batch_notebook = ttk.Notebook(self.player_nonplayer_batch_parent)
+        self.player_nonplayer_batch_notebook.pack(fill="both", expand=True)
+        self.player_nonplayer_batch_contract_tab = ttk.Frame(self.player_nonplayer_batch_notebook)
+        self.player_nonplayer_batch_international_tab = ttk.Frame(self.player_nonplayer_batch_notebook)
+        self.player_nonplayer_batch_notebook.add(self.player_nonplayer_batch_contract_tab, text="Contract")
+        self.player_nonplayer_batch_notebook.add(self.player_nonplayer_batch_international_tab, text="International Data")
+
+        self.player_nonplayer_single_notebook = ttk.Notebook(self.player_nonplayer_single_parent)
+        self.player_nonplayer_single_notebook.pack(fill="both", expand=True)
+        self.player_nonplayer_single_contract_tab = ttk.Frame(self.player_nonplayer_single_notebook)
+        self.player_nonplayer_single_international_tab = ttk.Frame(self.player_nonplayer_single_notebook)
+        self.player_nonplayer_single_notebook.add(self.player_nonplayer_single_contract_tab, text="Contract")
+        self.player_nonplayer_single_notebook.add(self.player_nonplayer_single_international_tab, text="International Data")
+
+
+
+        # Job / Role pickers (Non-player + Player/Non-Player)
+        # - Player tab is always 'Player' (no staff roles)
+        # - Non-player cannot use Player or Player/… roles
+        # - Player/Non-Player can be 'Player' or 'Player/…' roles only
+        try:
+            self._job_roles_nonplayer, self._job_roles_player_nonplayer = self._build_job_role_options()
+        except Exception:
+            self._job_roles_nonplayer, self._job_roles_player_nonplayer = [], ["Player"]
+
+        def _role_picker(parent, *, title: str, var: tk.StringVar, options: list[str], note: str):
+            wrap = ttk.Frame(parent, padding=16)
             wrap.pack(fill="both", expand=True)
-            ttk.Label(wrap, text=_msg, justify="left").pack(anchor="w")
+            ttk.Label(wrap, text=title, font=("Segoe UI", 10, "bold")).pack(anchor="w")
+            ttk.Label(wrap, text="Job / Role").pack(anchor="w", pady=(10, 2))
+            cb = self._make_searchable_picker(wrap, var, options, width=64)
+            cb.pack(anchor="w", fill="x")
+            ttk.Label(wrap, text=note, foreground="#444", wraplength=900, justify="left").pack(anchor="w", pady=(10, 0))
+
+        # Non-Player role selectors (staff-only)
+        self.nonplayer_batch_job_role = tk.StringVar(value=(self._job_roles_nonplayer[0] if self._job_roles_nonplayer else "Coach First Team"))
+        self.nonplayer_single_job_role = tk.StringVar(value=(self._job_roles_nonplayer[0] if self._job_roles_nonplayer else "Coach First Team"))
+        _note_np = "Role options are filtered: Non-Player cannot select Player-only or Player/… roles.\n" \
+                   "XML mapping for job property 1346587215 will be wired once the full mapping table is confirmed."
+        _role_picker(self.nonplayer_batch_contract_tab, title="Non-Player (staff-only)", var=self.nonplayer_batch_job_role, options=self._job_roles_nonplayer, note=_note_np)
+        _role_picker(self.nonplayer_single_contract_tab, title="Non-Player (staff-only)", var=self.nonplayer_single_job_role, options=self._job_roles_nonplayer, note=_note_np)
+
+        # Player/Non-Player role selectors (hybrid)
+        self.player_nonplayer_batch_job_role = tk.StringVar(value="Player")
+        self.player_nonplayer_single_job_role = tk.StringVar(value="Player")
+        _note_pnp = "Role options are filtered: Player/Non-Player can be 'Player' or 'Player/…' roles only.\n" \
+                    "Pure staff-only roles are not allowed in this tab.\n" \
+                    "XML mapping for job property 1346587215 will be wired once the full mapping table is confirmed."
+        _role_picker(self.player_nonplayer_batch_contract_tab, title="Player/Non-Player (hybrid)", var=self.player_nonplayer_batch_job_role, options=self._job_roles_player_nonplayer, note=_note_pnp)
+        _role_picker(self.player_nonplayer_single_contract_tab, title="Player/Non-Player (hybrid)", var=self.player_nonplayer_single_job_role, options=self._job_roles_player_nonplayer, note=_note_pnp)
+
+        # Placeholders for International Data (to be mirrored from Player tab later)
+        _intl_note = "International Data UI for Non-player / Player/Non-Player will be mirrored from the Player tab.\n" \
+                     "For now, configure International Data in Player > International Data."
+        for _fr in (
+            self.nonplayer_batch_international_tab,
+            self.nonplayer_single_international_tab,
+            self.player_nonplayer_batch_international_tab,
+            self.player_nonplayer_single_international_tab,
+        ):
+            try:
+                ttk.Label(_fr, text=_intl_note, padding=16, wraplength=900, justify="left").pack(anchor="w")
+            except Exception:
+                pass
+
 
         # Sticky action bars + scrollable content (PLAYER tabs)
         self.batch_actionbar = ttk.Frame(self.batch_tab)
@@ -494,6 +568,8 @@ class App(tk.Tk):
         self._build_batch_contract_tab()
         self._build_single_contract_tab()
         self._build_appender_tab()
+        self._build_settings_tab()
+        self._build_nonplayer_job_pickers()
         self._init_batch_single_file_sync()
         self.after(200, self._reload_master_library)
         self.after(350, self._cleanup_other_tabs_fields)
@@ -563,6 +639,23 @@ class App(tk.Tk):
             self._start_master_library_watch()
         except Exception:
             pass
+
+    def _copy_output(self) -> None:
+        """Copy the Output/Errors log to clipboard."""
+        try:
+            data = self.log.get('1.0', 'end-1c')
+            self.clipboard_clear()
+            self.clipboard_append(data)
+            try:
+                self._log('[OK] Output copied to clipboard.\n')
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                messagebox.showerror('Copy failed', str(e))
+            except Exception:
+                pass
+
 
     def _toggle_paths(self) -> None:
         """Show/hide the file path inputs (hidden by default)."""
@@ -1033,6 +1126,90 @@ class App(tk.Tk):
             return []
         return out
 
+
+    def _build_job_role_options(self):
+        """Build job/role labels for Non-Player and Player/Non-Player tabs.
+
+        These labels mirror the FM editor dropdown style (e.g. 'Manager First Team', 'Manager (U21 Team)', 'Player/Coach First Team').
+        Mapping to numeric 'job' values (property 1346587215) is wired separately once the mapping table is finalised.
+        """
+        # Board / executive roles (non-playing)
+        board = [
+            "Chairperson",
+            "Owner",
+            "Managing Director",
+            "Director",
+        ]
+
+        # Club-wide staff roles (non-playing)
+        clubwide = [
+            "Director of Football",
+            "Technical Director",
+            "Head of Youth Development",
+            "Chief Scout",
+            "Scout",
+            "Recruitment Analyst",
+            "Loan Manager",
+        ]
+
+        # First team staff roles (non-playing)
+        first_team = [
+            "Manager First Team",
+            "Assistant Manager First Team",
+            "Coach First Team",
+            "GK Coach First Team",
+            "Fitness Coach First Team",
+            "Set Piece Coach",
+            "Head Performance Analyst",
+            "Performance Analyst First Team",
+            "Head Physio",
+            "Physio First Team",
+            "Head of Sports Science",
+            "Sports Scientist First Team",
+            "Chief Doctor",
+            "Doctor First Team",
+        ]
+
+        # Reserve team staff roles (non-playing)
+        reserve_team = [
+            "Manager Reserve Team",
+            "Assistant Manager Reserve Team",
+            "Coach Reserve Team",
+            "GK Coach Reserve Team",
+            "Fitness Coach Reserve Team",
+            "Performance Analyst Reserve Team",
+            "Physio Reserve Team",
+            "Sports Scientist Reserve Team",
+            "Doctor Reserve Team",
+        ]
+
+        # Third team (seen in editor list)
+        third_team = [
+            "Manager Third Team",
+        ]
+
+        # Youth/Uxx team staff roles (non-playing)
+        u_roles = ["Manager", "Assistant Manager", "Coach", "GK Coach", "Fitness Coach", "Performance Analyst", "Physio", "Sports Scientist", "Doctor"]
+        u_levels = [23, 22, 21, 20, 19, 18]
+        youth = [f"{r} (U{u} Team)" for u in u_levels for r in u_roles]
+
+        # Youth teams aggregate (seen in editor list)
+        youth_agg = ["Coach (Youth Teams)"]
+
+        nonplayer = board + clubwide + first_team + reserve_team + third_team + youth + youth_agg
+
+        # De-duplicate while preserving order
+        seen = set()
+        nonplayer_unique = []
+        for x in nonplayer:
+            if x and x not in seen:
+                seen.add(x)
+                nonplayer_unique.append(x)
+
+        player_nonplayer = ["Player"] + [f"Player/{x}" for x in nonplayer_unique if x != "Player"]
+
+        return nonplayer_unique, player_nonplayer
+
     def _add_details_section(self, parent, row: int, prefix: str):
         """
         Shared Details UI block for Batch/Single.
@@ -1117,6 +1294,21 @@ class App(tk.Tk):
             rb_custom.grid(row=r, column=1, sticky="w", padx=(85, 2))
             rb_none.grid(row=r, column=1, sticky="w", padx=(165, 2))
 
+            # [AUTO] First Name random -> Gender random
+            if key == "first_name":
+                def _sync_gender_from_first_name(*_a, _p=prefix, _mv=mode_var):
+                    try:
+                        if _mv.get() == "random":
+                            _g = getattr(self, f"{_p}_details_gender_mode", None)
+                            if _g is not None:
+                                _g.set("random")
+                    except Exception:
+                        pass
+                try:
+                    mode_var.trace_add("write", _sync_gender_from_first_name)
+                except Exception:
+                    pass
+
             if kind == "disabled":
                 rb_rand.configure(state="disabled")
                 rb_custom.configure(state="disabled")
@@ -1145,9 +1337,21 @@ class App(tk.Tk):
                 w = self._make_searchable_picker(detailsf, value_var, city_labels, width=48)
             elif kind == "picker_nation":
                 nation_rows = list(self._load_master_library_rows(kind="nation"))
-                nation_labels = [x.get("nation_name") or x.get("name") or "" for x in nation_rows]
-                nation_labels = [x for x in nation_labels if x]
+                nation_labels = []
+                for x in nation_rows:
+                    nm = (x.get("nation_name") or x.get("name") or "").strip()
+                    dbid = str((x.get("nation_dbid") or x.get("dbid") or "") or "").strip()
+                    if not nm and dbid:
+                        nm = f"Nation DBID {dbid}"
+                    if nm:
+                        nation_labels.append(f"{nm} (DBID {dbid})" if dbid else nm)
+                # De-dup + sort for nicer UX
+                nation_labels = sorted(set([s for s in nation_labels if s]), key=lambda s: s.lower())
                 w = self._make_searchable_picker(detailsf, value_var, nation_labels, width=48)
+                try:
+                    w.bind("<<ComboboxSelected>>", lambda e, mv=mode_var: mv.set("custom"))
+                except Exception:
+                    pass
             else:
                 w = ttk.Entry(detailsf, textvariable=value_var)
 
@@ -1738,7 +1942,16 @@ class App(tk.Tk):
         ttk.Label(genf, text="Base year").grid(row=0, column=4, sticky="w", padx=6, pady=6)
         ttk.Entry(genf, textvariable=self.batch_base_year, width=10).grid(row=0, column=5, sticky="w", padx=6, pady=6)
 
-        self._add_details_section(frm, row=2, prefix="batch")
+        # Player tab: Person Type and Job are locked to Player
+        rolef = ttk.LabelFrame(frm, text="Person Type / Job (locked)")
+        rolef.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        rolef.columnconfigure(1, weight=1)
+        ttk.Label(rolef, text="Person Type:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Label(rolef, text="Player").grid(row=0, column=1, sticky="w", padx=6, pady=6)
+        ttk.Label(rolef, text="Job / Role:").grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Label(rolef, text="Player").grid(row=0, column=3, sticky="w", padx=6, pady=6)
+
+        self._add_details_section(frm, row=3, prefix="batch")
         try:
             ttk.Label(
                 frm,
@@ -1746,7 +1959,7 @@ class App(tk.Tk):
                 foreground="#444",
                 wraplength=900,
                 justify="left",
-            ).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+            ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
         except Exception:
             pass
 
@@ -1788,7 +2001,16 @@ class App(tk.Tk):
         ttk.Label(genf, text="Base year").grid(row=0, column=2, sticky="w", padx=6, pady=6)
         ttk.Entry(genf, textvariable=self.single_base_year, width=10).grid(row=0, column=3, sticky="w", padx=6, pady=6)
 
-        self._add_details_section(frm, row=2, prefix="single")
+        # Player tab: Person Type and Job are locked to Player
+        rolef = ttk.LabelFrame(frm, text="Person Type / Job (locked)")
+        rolef.grid(row=2, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        rolef.columnconfigure(1, weight=1)
+        ttk.Label(rolef, text="Person Type:").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Label(rolef, text="Player").grid(row=0, column=1, sticky="w", padx=6, pady=6)
+        ttk.Label(rolef, text="Job / Role:").grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Label(rolef, text="Player").grid(row=0, column=3, sticky="w", padx=6, pady=6)
+
+        self._add_details_section(frm, row=3, prefix="single")
         try:
             ttk.Label(
                 frm,
@@ -1796,7 +2018,7 @@ class App(tk.Tk):
                 foreground="#444",
                 wraplength=900,
                 justify="left",
-            ).grid(row=3, column=0, sticky="w", padx=8, pady=(0, 8))
+            ).grid(row=4, column=0, sticky="w", padx=8, pady=(0, 8))
         except Exception:
             pass
 
@@ -1916,7 +2138,7 @@ class App(tk.Tk):
             for name in (
                 "player_batch_other_tab", "player_single_other_tab", "batch_other_tab", "single_other_tab",
                 "batch_tab", "single_tab", "batch_body", "single_body",
-                "nonplayer_batch_other_tab", "nonplayer_single_other_tab",
+                "nonplayer_batch_contract_tab", "nonplayer_single_contract_tab", "player_nonplayer_batch_contract_tab", "player_nonplayer_single_contract_tab",
             ):
                 w = getattr(self, name, None)
                 if w is not None:
@@ -2215,7 +2437,7 @@ class App(tk.Tk):
                         city_map[label] = (dbid, lg)
                     elif kind == "nation":
                         dbid = (row.get("nation_dbid") or "").strip()
-                        lg = (row.get("nnat_large") or "").strip()
+                        lg = ((row.get("nnat_large") or "") or (row.get("nation_large") or "") or (row.get("large") or "") or (row.get("large_id") or "")).strip()
                         name = (row.get("nation_name") or "").strip()
                         if not dbid or not lg:
                             continue
@@ -2271,14 +2493,58 @@ class App(tk.Tk):
             pass
 
     def _get_fixed_ids(self, kind: str, label: str) -> tuple[str, str] | None:
+        """Resolve a picker label to (dbid, large).
+
+        Accepts either:
+        - exact picker labels like 'Scotland (DBID 11)'
+        - plain names like 'Scotland'
+        - 'Nation DBID 11' / 'City DBID 123' fallbacks
+
+        This is deliberately forgiving because some UI pickers store plain names.
+        """
         if not label:
             return None
+
+        label_s = str(label).strip()
+        if not label_s:
+            return None
+
         if kind == "club":
-            return getattr(self, "_club_map", {}).get(label)
-        if kind == "city":
-            return getattr(self, "_city_map", {}).get(label)
-        if kind == "nation":
-            return getattr(self, "_nation_map", {}).get(label)
+            mp = getattr(self, "_club_map", {}) or {}
+        elif kind == "city":
+            mp = getattr(self, "_city_map", {}) or {}
+        elif kind == "nation":
+            mp = getattr(self, "_nation_map", {}) or {}
+        else:
+            mp = {}
+
+        # 1) exact match
+        hit = mp.get(label_s)
+        if hit:
+            return hit
+
+        # 2) match by DBID in label
+        m = re.search(r"\bDBID\s*(\d+)\b", label_s, flags=re.I)
+        if m:
+            want = m.group(1)
+            for k, v in mp.items():
+                try:
+                    if re.search(rf"\bDBID\s*{re.escape(want)}\b", str(k), flags=re.I):
+                        return v
+                except Exception:
+                    continue
+
+        # 3) plain-name match (case-insensitive) against the left side of ' (DBID …)'
+        want_name = label_s.split("(")[0].strip().lower()
+        if want_name:
+            for k, v in mp.items():
+                try:
+                    kname = str(k).split("(")[0].strip().lower()
+                except Exception:
+                    continue
+                if kname == want_name:
+                    return v
+
         return None
 
     # ---------------- Extractor UI ----------------
@@ -3555,8 +3821,8 @@ class App(tk.Tk):
         self.batch_club_filter_combo = ttk.Combobox(sel, textvariable=self.batch_club_gender_filter, values=["Any", "Male", "Female"], state="readonly", width=8)
         self.batch_club_filter_combo.grid(row=0, column=5, sticky="w", padx=(0, 8), pady=6)
         self.batch_club_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_club_filter('batch'))
-        ttk.Radiobutton(sel, text="Random", variable=self.batch_club_mode, value="random", command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_club_mode, value="fixed", command=lambda mv=self.batch_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Random", variable=self.batch_club_mode, value="random", command=lambda mv=self.batch_club_mode, cb=club_combo, ds=self.batch_club_dont_set: (ds.set(False), self._combo_state_for_mode(mv, cb))).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.batch_club_mode, value="fixed", command=lambda mv=self.batch_club_mode, cb=club_combo, ds=self.batch_club_dont_set: (ds.set(False), self._combo_state_for_mode(mv, cb))).grid(row=0, column=2, sticky="w", padx=8, pady=6)
         ttk.Checkbutton(sel, text="Don't set", variable=self.batch_club_dont_set).grid(row=1, column=1, sticky="w", padx=8, pady=(0, 4))
 
         ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
@@ -3901,8 +4167,8 @@ class App(tk.Tk):
         self.single_club_filter_combo = ttk.Combobox(sel, textvariable=self.single_club_gender_filter, values=["Any", "Male", "Female"], state="readonly", width=8)
         self.single_club_filter_combo.grid(row=0, column=5, sticky="w", padx=(0, 8), pady=6)
         self.single_club_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._apply_club_filter('single'))
-        ttk.Radiobutton(sel, text="Random", variable=self.single_club_mode, value="random", command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=1, sticky="w", padx=8, pady=6)
-        ttk.Radiobutton(sel, text="Fixed", variable=self.single_club_mode, value="fixed", command=lambda mv=self.single_club_mode, cb=club_combo: self._combo_state_for_mode(mv, cb)).grid(row=0, column=2, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Random", variable=self.single_club_mode, value="random", command=lambda mv=self.single_club_mode, cb=club_combo, ds=self.single_club_dont_set: (ds.set(False), self._combo_state_for_mode(mv, cb))).grid(row=0, column=1, sticky="w", padx=8, pady=6)
+        ttk.Radiobutton(sel, text="Fixed", variable=self.single_club_mode, value="fixed", command=lambda mv=self.single_club_mode, cb=club_combo, ds=self.single_club_dont_set: (ds.set(False), self._combo_state_for_mode(mv, cb))).grid(row=0, column=2, sticky="w", padx=8, pady=6)
         ttk.Checkbutton(sel, text="Don't set", variable=self.single_club_dont_set).grid(row=1, column=1, sticky="w", padx=8, pady=(0, 4))
 
         ttk.Button(sel, text="Reload from master_library.csv", command=self._reload_master_library).grid(row=2, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 8))
@@ -4489,6 +4755,38 @@ def _apply_contract_tab_generation_overrides(self, prefix: str, extra: list[str]
                 messagebox.showerror("Club missing", "Fixed Club is selected, but no club is chosen.")
                 return
             extra.extend(["--club_dbid", ids[0], "--club_large", ids[1]])
+            # Free-agent split: if fixed club chosen, assign it only to this % (rest are free agents)
+            try:
+                pct = (getattr(self, "settings_club_assign_pct", None).get() if hasattr(self, "settings_club_assign_pct") else "50")
+            except Exception:
+                pct = "50"
+            pct = (str(pct).strip() or "50")
+            extra.extend(["--club_assign_pct", pct])
+
+
+        # Free-agent split: Club assign % from Settings (default 50)
+        if not self.batch_club_dont_set.get():
+            pct = "50"
+            try:
+                if hasattr(self, "settings_club_assign_pct"):
+                    pct = str(self.settings_club_assign_pct.get() or "50").strip() or "50"
+            except Exception:
+                pct = "50"
+            try:
+                iv = int(pct)
+                if iv < 0: iv = 0
+                if iv > 100: iv = 100
+                pct = str(iv)
+            except Exception:
+                pct = "50"
+            # remove any previous --club_assign_pct then set the chosen one
+            try:
+                while "--club_assign_pct" in extra:
+                    k = extra.index("--club_assign_pct")
+                    del extra[k:k+2]
+            except Exception:
+                pass
+            extra.extend(["--club_assign_pct", pct])
 
         if self.batch_city_mode.get() == "fixed":
             sel = self.batch_city_sel.get().strip()
@@ -4505,6 +4803,31 @@ def _apply_contract_tab_generation_overrides(self, prefix: str, extra: list[str]
                 messagebox.showerror("Nation missing", "Fixed Nation is selected, but no nation is chosen.")
                 return
             extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
+
+        # Details tab primary Nation (Random/Custom) — used because legacy Nation selector is hidden
+        # If user selects a Nation in Details as Custom, pass it to generator as primary nation.
+        try:
+            if "--nation_dbid" not in extra and ("--omit-field" not in extra or "nation" not in extra):
+                d_mode = str(getattr(self, "batch_details_nation_mode").get() or "none").strip().lower()
+                d_val = str(getattr(self, "batch_details_nation_value").get() or "").strip()
+                if d_val and d_mode != "none":
+                    ids = self._get_fixed_ids("nation", d_val)
+                    if ids:
+                        extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
+        except Exception:
+            pass
+
+        # Details tab City Of Birth (Random/Custom) -> CLI (legacy City selector is hidden)
+        try:
+            if "--city_dbid" not in extra and ("--omit-field" not in extra or "city_of_birth" not in extra):
+                c_mode = str(getattr(self, "batch_details_city_of_birth_mode").get() or "none").strip().lower()
+                c_val = str(getattr(self, "batch_details_city_of_birth_value").get() or "").strip()
+                if c_val and c_mode != "none":
+                    ids = self._get_fixed_ids("city", c_val)
+                    if ids:
+                        extra.extend(["--city_dbid", ids[0], "--city_large", ids[1]])
+        except Exception:
+            pass
 
         # Positions
         if self.batch_positions_dont_set.get():
@@ -4949,6 +5272,38 @@ def _apply_contract_tab_generation_overrides(self, prefix: str, extra: list[str]
                 messagebox.showerror("Club missing", "Fixed Club is selected, but no club is chosen.")
                 return
             extra.extend(["--club_dbid", ids[0], "--club_large", ids[1]])
+            # Free-agent split: if fixed club chosen, assign it only to this % (rest are free agents)
+            try:
+                pct = (getattr(self, "settings_club_assign_pct", None).get() if hasattr(self, "settings_club_assign_pct") else "50")
+            except Exception:
+                pct = "50"
+            pct = (str(pct).strip() or "50")
+            extra.extend(["--club_assign_pct", pct])
+
+
+        # Free-agent split: Club assign % from Settings (default 50)
+        if not self.single_club_dont_set.get():
+            pct = "50"
+            try:
+                if hasattr(self, "settings_club_assign_pct"):
+                    pct = str(self.settings_club_assign_pct.get() or "50").strip() or "50"
+            except Exception:
+                pct = "50"
+            try:
+                iv = int(pct)
+                if iv < 0: iv = 0
+                if iv > 100: iv = 100
+                pct = str(iv)
+            except Exception:
+                pct = "50"
+            # remove any previous --club_assign_pct then set the chosen one
+            try:
+                while "--club_assign_pct" in extra:
+                    k = extra.index("--club_assign_pct")
+                    del extra[k:k+2]
+            except Exception:
+                pass
+            extra.extend(["--club_assign_pct", pct])
 
         if self.single_city_mode.get() == "fixed":
             sel = self.single_city_sel.get().strip()
@@ -4965,6 +5320,30 @@ def _apply_contract_tab_generation_overrides(self, prefix: str, extra: list[str]
                 messagebox.showerror("Nation missing", "Fixed Nation is selected, but no nation is chosen.")
                 return
             extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
+
+        # Details tab primary Nation (Random/Custom) — used because legacy Nation selector is hidden
+        try:
+            if "--nation_dbid" not in extra and ("--omit-field" not in extra or "nation" not in extra):
+                d_mode = str(getattr(self, "single_details_nation_mode").get() or "none").strip().lower()
+                d_val = str(getattr(self, "single_details_nation_value").get() or "").strip()
+                if d_val and d_mode != "none":
+                    ids = self._get_fixed_ids("nation", d_val)
+                    if ids:
+                        extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
+        except Exception:
+            pass
+
+        # Details tab City Of Birth (Random/Custom) -> CLI (legacy City selector is hidden)
+        try:
+            if "--city_dbid" not in extra and ("--omit-field" not in extra or "city_of_birth" not in extra):
+                c_mode = str(getattr(self, "single_details_city_of_birth_mode").get() or "none").strip().lower()
+                c_val = str(getattr(self, "single_details_city_of_birth_value").get() or "").strip()
+                if c_val and c_mode != "none":
+                    ids = self._get_fixed_ids("city", c_val)
+                    if ids:
+                        extra.extend(["--city_dbid", ids[0], "--city_large", ids[1]])
+        except Exception:
+            pass
 
         # Positions
         if self.single_positions_dont_set.get():
@@ -6079,6 +6458,265 @@ def _run_batch_generator(self) -> None:
     except Exception:
         pass
 
+    # [PATCH v20] DETAILS NATION FORCE-INJECT
+
+    try:
+
+        n_mode = (getattr(self, "batch_details_nation_mode").get() or "none").strip().lower()
+
+        n_val  = (getattr(self, "batch_details_nation_value").get() or "").strip()
+
+        print(f"[DEBUG v20] Batch Details Nation: mode={n_mode} value={n_val!r}")
+
+        if n_mode == "custom" and n_val and "--nation_dbid" not in extra:
+
+            ids = self._get_fixed_ids("nation", n_val)
+
+            if ids:
+
+                extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
+
+                print(f"[DEBUG v20] Batch injected nation -> DBID {ids[0]} LARGE {ids[1]}")
+
+            else:
+
+                messagebox.showerror("Nation", "Custom Nation must be selected from the master_library nation list.")
+
+                return
+
+    except Exception as e:
+
+        print(f"[DEBUG v20] Batch nation inject error: {e}")
+
+
+
+        # [PATCH v8] club_assign_pct from Settings (default 50)
+        def _omitted(_field: str) -> bool:
+            try:
+                i = 0
+                while i < len(extra) - 1:
+                    if extra[i] == "--omit-field" and extra[i+1] == _field:
+                        return True
+                    i += 1
+            except Exception:
+                return False
+            return False
+
+        try:
+            if not _omitted("club"):
+                pct = "50"
+                try:
+                    if hasattr(self, "settings_club_assign_pct"):
+                        pct = str(self.settings_club_assign_pct.get() or "50").strip() or "50"
+                except Exception:
+                    pct = "50"
+
+                try:
+                    iv = int(pct)
+                    if iv < 0: iv = 0
+                    if iv > 100: iv = 100
+                    pct = str(iv)
+                except Exception:
+                    pct = "50"
+
+                # remove any previous --club_assign_pct then set chosen one
+                try:
+                    while "--club_assign_pct" in extra:
+                        k = extra.index("--club_assign_pct")
+                        del extra[k:k+2]
+                except Exception:
+                    pass
+
+                extra.extend(["--club_assign_pct", pct])
+
+                # optional: show in output
+                try:
+                    self._log(f"[INFO] club_assign_pct = {pct}% (Settings)\n")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+
+
+    # [PATCH v9] SETTINGS CLUB_ASSIGN_PCT
+
+
+
+
+    def _omitted(_field: str) -> bool:
+
+
+
+
+        try:
+
+
+
+
+            i = 0
+
+
+
+
+            while i < len(extra) - 1:
+
+
+
+
+                if extra[i] == "--omit-field" and extra[i+1] == _field:
+
+
+
+
+                    return True
+
+
+
+
+                i += 1
+
+
+
+
+        except Exception:
+
+
+
+
+            return False
+
+
+
+
+        return False
+
+
+
+
+
+    try:
+
+
+
+
+        if not _omitted("club"):
+
+
+
+
+            pct = "50"
+
+
+
+
+            try:
+
+
+
+
+                if hasattr(self, "settings_club_assign_pct"):
+
+
+
+
+                    pct = str(self.settings_club_assign_pct.get() or "50").strip() or "50"
+
+
+
+
+            except Exception:
+
+
+
+
+                pct = "50"
+
+
+
+
+            try:
+
+
+
+
+                iv = int(pct)
+
+
+
+
+                if iv < 0: iv = 0
+
+
+
+
+                if iv > 100: iv = 100
+
+
+
+
+                pct = str(iv)
+
+
+
+
+            except Exception:
+
+
+
+
+                pct = "50"
+
+
+
+
+            try:
+
+
+
+
+                while "--club_assign_pct" in extra:
+
+
+
+
+                    k = extra.index("--club_assign_pct")
+
+
+
+
+                    del extra[k:k+2]
+
+
+
+
+            except Exception:
+
+
+
+
+                pass
+
+
+
+
+            extra.extend(["--club_assign_pct", pct])
+
+
+
+
+    except Exception:
+
+
+
+
+        pass
+
+
+
+
+
     self._run_generator_common(
         script_path=self.batch_script.get().strip(),
         clubs=self.batch_clubs.get().strip(),
@@ -6478,6 +7116,265 @@ def _run_single_generator(self) -> None:
 
     except Exception:
         pass
+
+    # [PATCH v20] DETAILS NATION FORCE-INJECT
+
+    try:
+
+        n_mode = (getattr(self, "single_details_nation_mode").get() or "none").strip().lower()
+
+        n_val  = (getattr(self, "single_details_nation_value").get() or "").strip()
+
+        print(f"[DEBUG v20] Single Details Nation: mode={n_mode} value={n_val!r}")
+
+        if n_mode == "custom" and n_val and "--nation_dbid" not in extra:
+
+            ids = self._get_fixed_ids("nation", n_val)
+
+            if ids:
+
+                extra.extend(["--nation_dbid", ids[0], "--nation_large", ids[1]])
+
+                print(f"[DEBUG v20] Single injected nation -> DBID {ids[0]} LARGE {ids[1]}")
+
+            else:
+
+                messagebox.showerror("Nation", "Custom Nation must be selected from the master_library nation list.")
+
+                return
+
+    except Exception as e:
+
+        print(f"[DEBUG v20] Single nation inject error: {e}")
+
+
+
+        # [PATCH v8] club_assign_pct from Settings (default 50)
+        def _omitted(_field: str) -> bool:
+            try:
+                i = 0
+                while i < len(extra) - 1:
+                    if extra[i] == "--omit-field" and extra[i+1] == _field:
+                        return True
+                    i += 1
+            except Exception:
+                return False
+            return False
+
+        try:
+            if not _omitted("club"):
+                pct = "50"
+                try:
+                    if hasattr(self, "settings_club_assign_pct"):
+                        pct = str(self.settings_club_assign_pct.get() or "50").strip() or "50"
+                except Exception:
+                    pct = "50"
+
+                try:
+                    iv = int(pct)
+                    if iv < 0: iv = 0
+                    if iv > 100: iv = 100
+                    pct = str(iv)
+                except Exception:
+                    pct = "50"
+
+                # remove any previous --club_assign_pct then set chosen one
+                try:
+                    while "--club_assign_pct" in extra:
+                        k = extra.index("--club_assign_pct")
+                        del extra[k:k+2]
+                except Exception:
+                    pass
+
+                extra.extend(["--club_assign_pct", pct])
+
+                # optional: show in output
+                try:
+                    self._log(f"[INFO] club_assign_pct = {pct}% (Settings)\n")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+
+
+    # [PATCH v9] SETTINGS CLUB_ASSIGN_PCT
+
+
+
+
+    def _omitted(_field: str) -> bool:
+
+
+
+
+        try:
+
+
+
+
+            i = 0
+
+
+
+
+            while i < len(extra) - 1:
+
+
+
+
+                if extra[i] == "--omit-field" and extra[i+1] == _field:
+
+
+
+
+                    return True
+
+
+
+
+                i += 1
+
+
+
+
+        except Exception:
+
+
+
+
+            return False
+
+
+
+
+        return False
+
+
+
+
+
+    try:
+
+
+
+
+        if not _omitted("club"):
+
+
+
+
+            pct = "50"
+
+
+
+
+            try:
+
+
+
+
+                if hasattr(self, "settings_club_assign_pct"):
+
+
+
+
+                    pct = str(self.settings_club_assign_pct.get() or "50").strip() or "50"
+
+
+
+
+            except Exception:
+
+
+
+
+                pct = "50"
+
+
+
+
+            try:
+
+
+
+
+                iv = int(pct)
+
+
+
+
+                if iv < 0: iv = 0
+
+
+
+
+                if iv > 100: iv = 100
+
+
+
+
+                pct = str(iv)
+
+
+
+
+            except Exception:
+
+
+
+
+                pct = "50"
+
+
+
+
+            try:
+
+
+
+
+                while "--club_assign_pct" in extra:
+
+
+
+
+                    k = extra.index("--club_assign_pct")
+
+
+
+
+                    del extra[k:k+2]
+
+
+
+
+            except Exception:
+
+
+
+
+                pass
+
+
+
+
+            extra.extend(["--club_assign_pct", pct])
+
+
+
+
+    except Exception:
+
+
+
+
+        pass
+
+
+
+
 
     self._run_generator_common(
         script_path=self.single_script.get().strip(),
@@ -6961,6 +7858,158 @@ try:
     App._apply_contract_tab_generation_overrides = _apply_contract_tab_generation_overrides
 except Exception:
     pass
+
+def _build_settings_tab(self) -> None:
+    """Top-level Settings tab (global knobs). Uses existing tk variables so everything stays in sync."""
+    try:
+        frm = getattr(self, "settings_tab", None)
+        if frm is None:
+            return
+        if getattr(self, "_settings_tab_built", False):
+            return
+        self._settings_tab_built = True
+
+        frm.columnconfigure(0, weight=1)
+
+        if not hasattr(self, "settings_club_assign_pct"):
+            self.settings_club_assign_pct = tk.StringVar(value="50")  # % assigned to fixed club (players); rest free agents
+
+        gen = ttk.LabelFrame(frm, text="Generation Defaults")
+        gen.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 8))
+        for c in range(8):
+            gen.columnconfigure(c, weight=1)
+
+        ttk.Label(gen, text="Batch count").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(gen, textvariable=self.batch_count, width=10).grid(row=0, column=1, sticky="w", padx=6, pady=6)
+        ttk.Label(gen, text="Seed").grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(gen, textvariable=self.batch_seed, width=10).grid(row=0, column=3, sticky="w", padx=6, pady=6)
+        ttk.Label(gen, text="Base year").grid(row=0, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(gen, textvariable=self.batch_base_year, width=10).grid(row=0, column=5, sticky="w", padx=6, pady=6)
+
+        ttk.Label(gen, text="Fixed club assign % (players)").grid(row=0, column=6, sticky="w", padx=6, pady=6)
+        ttk.Entry(gen, textvariable=self.settings_club_assign_pct, width=8).grid(row=0, column=7, sticky="w", padx=6, pady=6)
+
+        # Keep Single seed/base-year in sync with Batch
+        def _sync_seed(*_):
+            try:
+                if hasattr(self, "single_seed") and self.single_seed.get() != self.batch_seed.get():
+                    self.single_seed.set(self.batch_seed.get())
+            except Exception:
+                pass
+        def _sync_year(*_):
+            try:
+                if hasattr(self, "single_base_year") and self.single_base_year.get() != self.batch_base_year.get():
+                    self.single_base_year.set(self.batch_base_year.get())
+            except Exception:
+                pass
+        try:
+            self.batch_seed.trace_add("write", _sync_seed)
+            self.batch_base_year.trace_add("write", _sync_year)
+        except Exception:
+            pass
+
+        pos = ttk.LabelFrame(frm, text="Positions (Random distribution + development)")
+        pos.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        for c in range(11):
+            pos.columnconfigure(c, weight=1)
+
+        ttk.Label(pos, text="Primary dist (GK/DEF/MID/ST %)").grid(row=0, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dist_gk, width=6).grid(row=0, column=1, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dist_def, width=6).grid(row=0, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dist_mid, width=6).grid(row=0, column=3, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dist_st, width=6).grid(row=0, column=4, sticky="w", padx=6, pady=6)
+
+        ttk.Label(pos, text="N@20 dist (1,2,3,4,5,6,7,8-12,13)").grid(row=1, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_1, width=6).grid(row=1, column=1, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_2, width=6).grid(row=1, column=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_3, width=6).grid(row=1, column=3, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_4, width=6).grid(row=1, column=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_5, width=6).grid(row=1, column=5, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_6, width=6).grid(row=1, column=6, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_7, width=6).grid(row=1, column=7, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_8_12, width=6).grid(row=1, column=8, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_n20_13, width=6).grid(row=1, column=9, sticky="w", padx=6, pady=6)
+
+        ttk.Checkbutton(pos, text="Enable dev positions", variable=self.batch_dev_enable).grid(row=2, column=0, sticky="w", padx=6, pady=6)
+        ttk.Label(pos, text="Auto dev chance %").grid(row=2, column=1, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_auto_dev_chance, width=6).grid(row=2, column=2, sticky="w", padx=6, pady=6)
+
+        ttk.Label(pos, text="Dev mode").grid(row=2, column=3, sticky="w", padx=6, pady=6)
+        ttk.Combobox(pos, textvariable=self.batch_dev_mode, values=["random","fixed","range"], state="readonly", width=10).grid(row=2, column=4, sticky="w", padx=6, pady=6)
+        ttk.Label(pos, text="Fixed").grid(row=2, column=5, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dev_fixed, width=6).grid(row=2, column=6, sticky="w", padx=6, pady=6)
+        ttk.Label(pos, text="Min").grid(row=2, column=7, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dev_min, width=6).grid(row=2, column=8, sticky="w", padx=6, pady=6)
+        ttk.Label(pos, text="Max").grid(row=2, column=9, sticky="w", padx=6, pady=6)
+        ttk.Entry(pos, textvariable=self.batch_dev_max, width=6).grid(row=2, column=10, sticky="w", padx=6, pady=6)
+
+        ttk.Label(frm, text="Tip: Position settings affect Batch only when 'Random positions' is enabled.", foreground="#444").grid(
+            row=2, column=0, sticky="w", padx=12, pady=(0, 10)
+        )
+    except Exception:
+        pass
+
+def _build_nonplayer_job_pickers(self) -> None:
+    """Ensure Job/Role pickers exist in Non-player + Player/Non-Player Contract tabs."""
+    try:
+        if getattr(self, "_job_pickers_built", False):
+            return
+
+        # If tabs already have children, don't duplicate (job picker is usually the only content)
+        try:
+            if hasattr(self, "nonplayer_batch_contract_tab") and self.nonplayer_batch_contract_tab.winfo_children():
+                self._job_pickers_built = True
+                return
+        except Exception:
+            pass
+
+        self._job_pickers_built = True
+
+        try:
+            nonplayer_roles, hybrid_roles = self._build_job_role_options()
+        except Exception:
+            nonplayer_roles, hybrid_roles = [], ["Player"]
+
+        if not hasattr(self, "nonplayer_batch_job_role"):
+            self.nonplayer_batch_job_role = tk.StringVar(value=(nonplayer_roles[0] if nonplayer_roles else "Coach First Team"))
+        if not hasattr(self, "nonplayer_single_job_role"):
+            self.nonplayer_single_job_role = tk.StringVar(value=(nonplayer_roles[0] if nonplayer_roles else "Coach First Team"))
+        if not hasattr(self, "player_nonplayer_batch_job_role"):
+            self.player_nonplayer_batch_job_role = tk.StringVar(value="Player")
+        if not hasattr(self, "player_nonplayer_single_job_role"):
+            self.player_nonplayer_single_job_role = tk.StringVar(value="Player")
+
+        def _add_picker(tab, title, var, options, note):
+            lf = ttk.LabelFrame(tab, text=title)
+            lf.pack(fill="x", padx=12, pady=12)
+            ttk.Label(lf, text="Job / Role").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+            w = self._make_searchable_picker(lf, var, list(options or []), width=64)
+            w.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+            lf.columnconfigure(0, weight=1)
+            ttk.Label(lf, text=note, foreground="#444", wraplength=900, justify="left").grid(row=2, column=0, sticky="w", padx=8, pady=(0, 8))
+
+        if hasattr(self, "nonplayer_batch_contract_tab"):
+            _add_picker(self.nonplayer_batch_contract_tab, "Non-Player (staff-only)", self.nonplayer_batch_job_role, nonplayer_roles,
+                        "Non-Player cannot select Player-only or Player/… roles.")
+        if hasattr(self, "nonplayer_single_contract_tab"):
+            _add_picker(self.nonplayer_single_contract_tab, "Non-Player (staff-only)", self.nonplayer_single_job_role, nonplayer_roles,
+                        "Non-Player cannot select Player-only or Player/… roles.")
+        if hasattr(self, "player_nonplayer_batch_contract_tab"):
+            _add_picker(self.player_nonplayer_batch_contract_tab, "Player/Non-Player (hybrid)", self.player_nonplayer_batch_job_role, hybrid_roles,
+                        "Hybrid can be 'Player' or 'Player/…' roles only.")
+        if hasattr(self, "player_nonplayer_single_contract_tab"):
+            _add_picker(self.player_nonplayer_single_contract_tab, "Player/Non-Player (hybrid)", self.player_nonplayer_single_job_role, hybrid_roles,
+                        "Hybrid can be 'Player' or 'Player/…' roles only.")
+    except Exception:
+        pass
+
+# Attach Settings/Jobs helpers
+try:
+    App._build_settings_tab = _build_settings_tab
+    App._build_nonplayer_job_pickers = _build_nonplayer_job_pickers
+except Exception:
+    pass
+
 
 def main() -> int:
     try:
